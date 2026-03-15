@@ -363,8 +363,8 @@ export default function App() {
                     <td>{formatDate(item.receivedAt)}</td>
                     <td>{formatValue(item.temperatura)} °C</td>
                     <td>{formatValue(item.humedad)} %</td>
-                    <td>{formatValue(item.radiacion_uv)}</td>
-                    <td>{formatValue(item.sonido)}</td>
+                    <td>{formatValue(item.radiacion_uv)} mW/cm2</td>
+                    <td>{formatValue(item.sonido)} dB</td>
                     <td>{formatValue(item.voltaje, 2)} V</td>
                   </tr>
                 ))
