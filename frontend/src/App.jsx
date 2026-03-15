@@ -23,8 +23,8 @@ const FILTERS = {
 const METRICS = [
   { key: "temperatura", title: "Temperatura", unit: "°C", color: "#ff8a65" },
   { key: "humedad", title: "Humedad", unit: "%", color: "#4fc3f7" },
-  { key: "radiacion_uv", title: "Radiación UV", unit: "", color: "#ffd54f" },
-  { key: "sonido", title: "Sonido", unit: "", color: "#ba68c8" },
+  { key: "radiacion_uv", title: "Radiación UV", unit: "mW/cm2", color: "#ffd54f" },
+  { key: "sonido", title: "Sonido", unit: "dB", color: "#ba68c8" },
   { key: "voltaje", title: "Voltaje", unit: "V", color: "#66bb6a" },
 ];
 
@@ -157,7 +157,7 @@ export default function App() {
     <div className="app-shell">
       <header className="hero viva-hero">
         <div className="hero-left">
-          <span className="hero-chip">VIVA | Nuevatel PCS de Bolivia</span>
+          <span className="hero-chip">Equipo InHouse - Los Cracks</span>
           <h1>Sistema de monitoreo ambiental LoRaWAN</h1>
           <p>
             Plataforma de visualización en tiempo real para monitoreo de
