@@ -1,0 +1,74 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #f5f7fb;
+  color: #1f2937;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.header {
+  margin-bottom: 24px;
+}
+
+.header h1 {
+  margin: 0 0 8px 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.card {
+  background: white;
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+  margin-bottom: 20px;
+}
+
+.metric-card h3 {
+  margin-top: 0;
+  font-size: 16px;
+  color: #4b5563;
+}
+
+.metric-value {
+  font-size: 24px;
+  font-weight: bold;
+  margin: 8px 0 0 0;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  padding: 10px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+}
+
+.error {
+  background: #fee2e2;
+  color: #991b1b;
+  padding: 12px;
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
