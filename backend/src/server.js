@@ -1,5 +1,28 @@
 require("dotenv").config();
 
+const requiredEnv = [
+  "MONGODB_URI",
+  "TTN_MQTT_HOST",
+  "TTN_APP_ID",
+  "TTN_API_KEY",
+  "TTN_DEVICE_ID"
+];
+
+const missingEnv = requiredEnv.filter((name) => !process.env[name]);
+
+if (missingEnv.length > 0) {
+  console.error(" Faltan variables de entorno:", missingEnv.join(", "));
+  process.exit(1);
+}
+
+console.log(" Variables principales detectadas");
+console.log("MONGODB_URI:", process.env.MONGODB_URI ? "OK" : "FALTA");
+console.log("TTN_MQTT_HOST:", process.env.TTN_MQTT_HOST ? "OK" : "FALTA");
+console.log("TTN_APP_ID:", process.env.TTN_APP_ID ? "OK" : "FALTA");
+console.log("TTN_API_KEY:", process.env.TTN_API_KEY ? "OK" : "FALTA");
+console.log("TTN_DEVICE_ID:", process.env.TTN_DEVICE_ID ? "OK" : "FALTA");
+
+
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
@@ -39,7 +62,7 @@ app.get("/api/measurements/latest", async (req, res) => {
 
 app.get("/api/measurements", async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit || "50", 10), 500);
+    const limit = Math.min(parseInt(req.query.limit || "500", 10), 2000);
     const deviceId = req.query.deviceId;
 
     const filter = {};
@@ -72,8 +95,9 @@ app.get("/api/measurements/stats", async (req, res) => {
 });
 
 async function connectMongo() {
+  console.log(" Intentando conectar a MongoDB...");
   await mongoose.connect(process.env.MONGODB_URI);
-  console.log("✅ MongoDB conectado");
+  console.log(" Conectado a MongoDB");
 }
 
 function startMqtt() {
@@ -90,14 +114,14 @@ function startMqtt() {
   });
 
   client.on("connect", () => {
-    console.log("✅ MQTT conectado a TTN");
-    console.log("📡 Topic:", topic);
+    console.log(" MQTT conectado a TTN");
+    console.log(" Topic:", topic);
 
     client.subscribe(topic, { qos: 0 }, err => {
       if (err) {
-        console.error("❌ Error al suscribirse:", err.message);
+        console.error(" Error al suscribirse:", err.message);
       } else {
-        console.log("✅ Suscripción exitosa");
+        console.log("Suscripción exitosa");
       }
     });
   });
@@ -154,32 +178,36 @@ function startMqtt() {
         { upsert: true }
       );
 
-      console.log(`💾 Guardado uplink ${doc.deviceId} fCnt=${doc.fCnt}`);
+      console.log(` Guardado uplink ${doc.deviceId} fCnt=${doc.fCnt}`);
     } catch (error) {
-      console.error("❌ Error procesando mensaje:", error.message);
+      console.error(" Error procesando mensaje:", error.message);
     }
   });
 
   client.on("error", err => {
-    console.error("❌ MQTT error:", err.message);
+    console.error(" MQTT error:", err.message);
   });
 
   client.on("reconnect", () => {
-    console.log("🔄 Reconectando a MQTT...");
+    console.log(" Reconectando a MQTT...");
   });
 }
 
-async function start() {
+async function startServer() {
+  console.log(" Iniciando backend...");
   await connectMongo();
+  console.log(" Paso MongoDB completado");
+
   startMqtt();
+  console.log(" Paso MQTT iniciado");
 
   const port = process.env.PORT || 10000;
   app.listen(port, "0.0.0.0", () => {
-    console.log(`🚀 API en puerto ${port}`);
+    console.log(`🚀 API escuchando en puerto ${port}`);
   });
 }
 
-start().catch(err => {
-  console.error("❌ Error de arranque:", err);
+startServer().catch(err => {
+  console.error(" Error al iniciar backend:", err);
   process.exit(1);
 });
