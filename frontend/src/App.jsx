@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import "./App.css";
 import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
+  Brush,
   CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
-  Legend,
-  Brush,
 } from "recharts";
+import "./App.css";
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:10000";
 
 const FILTERS = {
   minute: { label: "Último minuto", ms: 60 * 1000 },
@@ -21,26 +21,39 @@ const FILTERS = {
 };
 
 const METRICS = [
-  { key: "temperatura", title: "Temperatura", unit: "°C", color: "#ff8a65" },
-  { key: "humedad", title: "Humedad", unit: "%", color: "#4fc3f7" },
-  { key: "radiacion_uv", title: "Radiación UV", unit: "mW/cm2", color: "#ffd54f" },
-  { key: "sonido", title: "Sonido", unit: "dB", color: "#ba68c8" },
-  { key: "voltaje", title: "Voltaje", unit: "V", color: "#66bb6a" },
+  { key: "temperatura", title: "Temperatura", short: "Temp", unit: "°C", color: "#ff8a65" },
+  { key: "humedad", title: "Humedad", short: "Hum", unit: "%", color: "#4fc3f7" },
+  { key: "radiacion_uv", title: "Radiación UV", short: "Rad", unit: "mW/cm²", color: "#ffd54f" },
+  { key: "sonido", title: "Sonido", short: "Son", unit: "dB", color: "#ba68c8" },
+  { key: "voltaje", title: "Voltaje", short: "Volt", unit: "V", color: "#66bb6a" },
 ];
 
-const DEFAULT_VISIBLE_METRICS = {
-  temperatura: true,
-  humedad: true,
-  radiacion_uv: true,
-  sonido: true,
-  voltaje: true,
-};
+const DEVICE_STYLES = [
+  { dot: "#90be6d", dash: "0" },
+  { dot: "#577590", dash: "6 4" },
+  { dot: "#f8961e", dash: "10 5" },
+  { dot: "#43aa8b", dash: "3 5" },
+  { dot: "#f94144", dash: "12 6" },
+  { dot: "#277da1", dash: "2 4" },
+];
+
+function getMetricMeta(metricKey) {
+  return METRICS.find((metric) => metric.key === metricKey) || METRICS[0];
+}
+
+function getMetricDigits(metricKey) {
+  return metricKey === "voltaje" ? 2 : 1;
+}
+
+function buildSeriesKey(deviceId, metricKey) {
+  return `${deviceId}__${metricKey}`;
+}
 
 function formatValue(value, digits = 1) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return "--";
-  }
-  return Number(value).toFixed(digits);
+  if (value === null || value === undefined || value === "") return "--";
+  const numeric = Number(value);
+  if (Number.isNaN(numeric)) return "--";
+  return numeric.toFixed(digits);
 }
 
 function formatDate(date) {
@@ -83,30 +96,115 @@ function formatXAxisLabel(date, filter, isCustomRange = false) {
   });
 }
 
-function MetricCard({ title, value, unit, color }) {
+function formatRelativeTime(date) {
+  if (!date) return "Sin actividad reciente";
+
+  const diffMs = Date.now() - new Date(date).getTime();
+  if (diffMs < 0) return "Ahora";
+
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return `${diffSec} seg ago`;
+
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} min ago`;
+
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} hr ago`;
+
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay} d ago`;
+}
+
+function getDeviceStatus(date) {
+  if (!date) return { text: "Sin datos", tone: "offline" };
+
+  const diffMs = Date.now() - new Date(date).getTime();
+  if (diffMs <= 3 * 60 * 1000) return { text: "Activo", tone: "online" };
+  if (diffMs <= 30 * 60 * 1000) return { text: "Intermitente", tone: "warning" };
+  return { text: "Sin actividad reciente", tone: "offline" };
+}
+
+function createDefaultSeriesVisibility(devices) {
+  const visibleByDevice = {};
+
+  devices.forEach((device) => {
+    const defaults = {};
+    device.variables.forEach((metricKey) => {
+      defaults[metricKey] =
+        metricKey === "temperatura" ||
+        metricKey === "humedad" ||
+        metricKey === "sonido";
+    });
+    visibleByDevice[device.deviceId] = defaults;
+  });
+
+  return visibleByDevice;
+}
+
+function DeviceMetricCard({ metricKey, value }) {
+  const metric = getMetricMeta(metricKey);
   return (
-    <div className="metric-card dynamic-card">
-      <div className="metric-title-row">
-        <span className="metric-title">{title}</span>
-        <span className="metric-dot" style={{ backgroundColor: color }} />
+    <div className="mini-metric-card">
+      <div className="mini-metric-top">
+        <span>{metric.title}</span>
+        <span
+          className="mini-metric-dot"
+          style={{ backgroundColor: metric.color }}
+        />
       </div>
-      <div className="metric-value">
-        {value} <small>{unit}</small>
-      </div>
+      <strong>
+        {formatValue(value, getMetricDigits(metricKey))}
+        <small>{metric.unit}</small>
+      </strong>
     </div>
   );
 }
 
+function DeviceRealtimeRow({ device, latest, deviceStyle }) {
+  const status = getDeviceStatus(latest?.receivedAt);
+
+  return (
+    <article className="device-realtime-row">
+      <div className="device-label-panel">
+        <div className="device-label-top">
+          <h3>{device.label}</h3>
+          <span
+            className={`device-status-badge ${status.tone}`}
+            style={{ borderColor: deviceStyle.dot }}
+          >
+            <span
+              className="device-status-dot"
+              style={{ backgroundColor: deviceStyle.dot }}
+            />
+            {status.text}
+          </span>
+        </div>
+        <p>{device.deviceId}</p>
+        <small>
+          Última actividad: {latest?.receivedAt ? formatRelativeTime(latest.receivedAt) : "--"}
+        </small>
+      </div>
+
+      <div className="device-metrics-grid">
+        {device.variables.map((metricKey) => (
+          <DeviceMetricCard
+            key={`${device.deviceId}-${metricKey}`}
+            metricKey={metricKey}
+            value={latest?.[metricKey]}
+          />
+        ))}
+      </div>
+    </article>
+  );
+}
+
 export default function App() {
-  const [latest, setLatest] = useState(null);
+  const [devices, setDevices] = useState([]);
+  const [latestDevices, setLatestDevices] = useState([]);
   const [items, setItems] = useState([]);
   const [filter, setFilter] = useState("hour");
-  const [selectedMetric, setSelectedMetric] = useState("temperatura");
-  const [visibleMetrics, setVisibleMetrics] = useState(DEFAULT_VISIBLE_METRICS);
-  const [customRange, setCustomRange] = useState({
-    from: "",
-    to: "",
-  });
+  const [seriesVisibility, setSeriesVisibility] = useState({});
+  const [customRange, setCustomRange] = useState({ from: "", to: "" });
   const [darkMode, setDarkMode] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -117,21 +215,32 @@ export default function App() {
     try {
       setError("");
 
-      const [latestRes, listRes] = await Promise.all([
-        fetch(`${API_URL}/api/measurements/latest`),
-        fetch(`${API_URL}/api/measurements?limit=2000`),
+      const [configRes, latestRes, listRes] = await Promise.all([
+        fetch(`${API_URL}/api/devices/config`),
+        fetch(`${API_URL}/api/devices/latest`),
+        fetch(`${API_URL}/api/measurements?limit=5000&sort=asc`),
       ]);
 
-      if (!latestRes.ok || !listRes.ok) {
+      if (!configRes.ok || !latestRes.ok || !listRes.ok) {
         throw new Error("No se pudo cargar la información del backend");
       }
 
+      const configData = await configRes.json();
       const latestData = await latestRes.json();
       const listData = await listRes.json();
 
-      setLatest(latestData || null);
+      const safeDevices = Array.isArray(configData) ? configData : [];
+      setDevices(safeDevices);
+      setLatestDevices(Array.isArray(latestData) ? latestData : []);
       setItems(Array.isArray(listData) ? listData : []);
       setLastUpdated(new Date());
+
+      setSeriesVisibility((prev) => {
+        if (Object.keys(prev).length > 0) {
+          return prev;
+        }
+        return createDefaultSeriesVisibility(safeDevices);
+      });
     } catch (err) {
       setError(err.message || "Error desconocido");
     } finally {
@@ -155,12 +264,23 @@ export default function App() {
     return () => document.body.classList.remove("dark-theme");
   }, [darkMode]);
 
+  const deviceMap = useMemo(() => {
+    return Object.fromEntries(devices.map((device) => [device.deviceId, device]));
+  }, [devices]);
+
+  const latestMap = useMemo(() => {
+    return Object.fromEntries(
+      latestDevices.map((device) => [device.deviceId, device.latest || null])
+    );
+  }, [latestDevices]);
+
   const isCustomRangeActive = useMemo(() => {
     return Boolean(customRange.from || customRange.to);
   }, [customRange]);
 
   const customRangeError = useMemo(() => {
     if (!customRange.from || !customRange.to) return "";
+
     const fromMs = new Date(customRange.from).getTime();
     const toMs = new Date(customRange.to).getTime();
 
@@ -181,12 +301,8 @@ export default function App() {
     if (isCustomRangeActive) {
       if (customRangeError) return [];
 
-      const from = customRange.from
-        ? new Date(customRange.from).getTime()
-        : -Infinity;
-      const to = customRange.to
-        ? new Date(customRange.to).getTime()
-        : Infinity;
+      const from = customRange.from ? new Date(customRange.from).getTime() : -Infinity;
+      const to = customRange.to ? new Date(customRange.to).getTime() : Infinity;
 
       return items.filter((item) => {
         const time = new Date(item.receivedAt).getTime();
@@ -204,44 +320,49 @@ export default function App() {
   }, [items, filter, customRange, isCustomRangeActive, customRangeError]);
 
   const chartData = useMemo(() => {
-    return filteredItems
-      .slice()
-      .reverse()
-      .map((item) => ({
+    return filteredItems.map((item) => {
+      const row = {
         label: formatXAxisLabel(item.receivedAt, filter, isCustomRangeActive),
-        temperatura: Number(item.temperatura),
-        humedad: Number(item.humedad),
-        radiacion_uv: Number(item.radiacion_uv),
-        sonido: Number(item.sonido),
-        voltaje: Number(item.voltaje),
         receivedAt: item.receivedAt,
-      }));
-  }, [filteredItems, filter, isCustomRangeActive]);
+        deviceId: item.deviceId,
+      };
 
-  const selectedMetricMeta =
-    METRICS.find((metric) => metric.key === selectedMetric) || METRICS[0];
+      const device = deviceMap[item.deviceId];
+      if (!device) return row;
 
-  const visibleMetricList = useMemo(() => {
-    return METRICS.filter((metric) => visibleMetrics[metric.key]);
-  }, [visibleMetrics]);
+      device.variables.forEach((metricKey) => {
+        const rawValue = item[metricKey];
+        const numeric = rawValue === null || rawValue === undefined ? null : Number(rawValue);
+        row[buildSeriesKey(item.deviceId, metricKey)] = Number.isNaN(numeric) ? null : numeric;
+      });
 
-  const hasVisibleMetrics = visibleMetricList.length > 0;
+      return row;
+    });
+  }, [filteredItems, filter, isCustomRangeActive, deviceMap]);
 
-  const chartTheme = useMemo(() => {
-    return darkMode
-      ? {
-          grid: "#233044",
-          axis: "#94a3b8",
-          tooltipBg: "#0f172a",
-          tooltipBorder: "#334155",
-        }
-      : {
-          grid: "#dfe8d8",
-          axis: "#6b7280",
-          tooltipBg: "#ffffff",
-          tooltipBorder: "#dce8d6",
-        };
-  }, [darkMode]);
+  const visibleSeries = useMemo(() => {
+    return devices.flatMap((device, index) => {
+      const deviceStyle = DEVICE_STYLES[index % DEVICE_STYLES.length];
+
+      return device.variables
+        .filter((metricKey) => seriesVisibility[device.deviceId]?.[metricKey])
+        .map((metricKey) => {
+          const metric = getMetricMeta(metricKey);
+          return {
+            key: buildSeriesKey(device.deviceId, metricKey),
+            metricKey,
+            deviceId: device.deviceId,
+            name: `${device.label} • ${metric.short}`,
+            color: metric.color,
+            dash: deviceStyle.dash,
+          };
+        });
+    });
+  }, [devices, seriesVisibility]);
+
+  const historyRows = useMemo(() => {
+    return filteredItems.slice().reverse().slice(0, 100);
+  }, [filteredItems]);
 
   const rangeLabel = useMemo(() => {
     if (isCustomRangeActive) {
@@ -249,8 +370,15 @@ export default function App() {
       const toLabel = customRange.to ? formatDate(customRange.to) : "Ahora";
       return `${fromLabel} → ${toLabel}`;
     }
+
     return FILTERS[filter].label;
-  }, [isCustomRangeActive, customRange, filter]);
+  }, [customRange.from, customRange.to, filter, isCustomRangeActive]);
+
+  const activeDeviceCount = useMemo(() => {
+    return devices.filter((device) =>
+      device.variables.some((metricKey) => seriesVisibility[device.deviceId]?.[metricKey])
+    ).length;
+  }, [devices, seriesVisibility]);
 
   const handleCustomRangeChange = (field, value) => {
     setCustomRange((prev) => ({
@@ -260,193 +388,102 @@ export default function App() {
   };
 
   const clearCustomRange = () => {
-    setCustomRange({
-      from: "",
-      to: "",
-    });
+    setCustomRange({ from: "", to: "" });
   };
 
-  const handleToggleMetric = (metricKey) => {
-    setVisibleMetrics((prev) => {
-      const next = {
-        ...prev,
-        [metricKey]: !prev[metricKey],
-      };
+  const toggleSeries = (deviceId, metricKey) => {
+    setSeriesVisibility((prev) => ({
+      ...prev,
+      [deviceId]: {
+        ...(prev[deviceId] || {}),
+        [metricKey]: !prev[deviceId]?.[metricKey],
+      },
+    }));
+  };
 
-      if (prev[metricKey] && selectedMetric === metricKey) {
-        const nextVisible = METRICS.find(
-          (metric) => metric.key !== metricKey && next[metric.key]
-        );
-        if (nextVisible) {
-          setSelectedMetric(nextVisible.key);
-        }
-      }
-
-      if (!prev[metricKey]) {
-        setSelectedMetric(metricKey);
-      }
-
+  const setAllSeries = (visible) => {
+    setSeriesVisibility((prev) => {
+      const next = { ...prev };
+      devices.forEach((device) => {
+        next[device.deviceId] = { ...(next[device.deviceId] || {}) };
+        device.variables.forEach((metricKey) => {
+          next[device.deviceId][metricKey] = visible;
+        });
+      });
       return next;
     });
-  };
-
-  const showAllMetrics = () => {
-    setVisibleMetrics(DEFAULT_VISIBLE_METRICS);
-  };
-
-  const hideAllMetrics = () => {
-    setVisibleMetrics({
-      temperatura: false,
-      humedad: false,
-      radiacion_uv: false,
-      sonido: false,
-      voltaje: false,
-    });
-  };
-
-  const handleSelectMetric = (metricKey) => {
-    setSelectedMetric(metricKey);
-    setVisibleMetrics((prev) => ({
-      ...prev,
-      [metricKey]: true,
-    }));
   };
 
   return (
     <div className="app-shell">
       <header className="hero viva-hero">
-        <div className="hero-left">
+        <div className="brand-mark">VIVA</div>
+
+        <div className="hero-copy">
           <div className="hero-topbar">
-            <span className="hero-chip">Equipo InHouse - Los Cracks</span>
+            <span className="hero-chip">Sistema IoT · TTN + MongoDB + React</span>
             <button
               className="theme-toggle"
               onClick={() => setDarkMode((prev) => !prev)}
               type="button"
             >
-              {darkMode ? "☀️ Modo claro" : "🌙 Modo oscuro"}
+              {darkMode ? "Modo claro" : "Modo oscuro"}
             </button>
           </div>
 
           <h1>Sistema de monitoreo ambiental LoRaWAN</h1>
           <p>
-            Plataforma de visualización en tiempo real para monitoreo de
-            <strong> temperatura</strong>, <strong>humedad</strong>,
-            <strong> radiación UV</strong>, <strong>sonido</strong> y
-            <strong> voltaje</strong>, con historial y filtros temporales para
-            supervisión operativa del nodo IoT.
+            Supervisión en tiempo real de <strong>6 dispositivos</strong>. Los
+            dispositivos 1 y 2 reportan temperatura, humedad, radiación UV,
+            sonido y voltaje; los dispositivos 3 al 6 reportan temperatura y
+            humedad.
           </p>
-
-          <div className="hero-tags">
-            <span>LoRaWAN</span>
-            <span>Tiempo real</span>
-            <span>Telemetría ambiental</span>
-            <span>Dashboard IoT</span>
-          </div>
         </div>
 
-        <div className="hero-right">
-          <img src="/viva/logo-viva.png" alt="Viva" className="hero-logo" />
-          <div className="live-panel">
-            <div className="live-pill">
-              <span className="live-dot" />
-              Sistema en línea
-            </div>
-            <strong>{now.toLocaleTimeString()}</strong>
-            <small>{now.toLocaleDateString()}</small>
-            <span className="last-update">
-              Última actualización: {lastUpdated ? formatDate(lastUpdated) : "--"}
-            </span>
+        <div className="live-panel">
+          <div className="live-pill">
+            <span className="live-dot" />
+            Sistema en línea
           </div>
+          <strong>{now.toLocaleTimeString()}</strong>
+          <small>{now.toLocaleDateString()}</small>
+          <span className="last-update">
+            Última actualización: {lastUpdated ? formatDate(lastUpdated) : "--"}
+          </span>
         </div>
       </header>
 
       {(error || customRangeError) && (
-        <div className="alert-box">
-          Error: {customRangeError || error}
-        </div>
+        <div className="alert-box">Error: {customRangeError || error}</div>
       )}
 
-      <section className="filters-section">
-        <div>
-          <h2>Monitoreo dinámico</h2>
-          <p>
-            Usa filtros rápidos o define un rango personalizado por fecha y hora.
-          </p>
-        </div>
+      <section className="dashboard-grid">
+        <section className="panel-card realtime-panel">
+          <div className="section-header">
+            <div>
+              <h2>Datos en tiempo real</h2>
+              <p>Último registro recibido por cada dispositivo.</p>
+            </div>
+            <div className="summary-pill-group">
+              <span>{devices.length} dispositivos</span>
+              <span>{latestDevices.filter((item) => item.latest).length} con datos</span>
+            </div>
+          </div>
 
-        <div className="filters-right">
-          <div className="filter-buttons">
-            {Object.entries(FILTERS).map(([key, value]) => (
-              <button
-                key={key}
-                className={filter === key ? "filter-btn active" : "filter-btn"}
-                onClick={() => setFilter(key)}
-                type="button"
-              >
-                {value.label}
-              </button>
+          <div className="devices-stack">
+            {devices.map((device, index) => (
+              <DeviceRealtimeRow
+                key={device.deviceId}
+                device={device}
+                latest={latestMap[device.deviceId]}
+                deviceStyle={DEVICE_STYLES[index % DEVICE_STYLES.length]}
+              />
             ))}
           </div>
+        </section>
 
-          <div className="custom-range-box">
-            <div className="custom-range-header">
-              <span>Rango personalizado</span>
-              {isCustomRangeActive && (
-                <button
-                  className="ghost-btn"
-                  onClick={clearCustomRange}
-                  type="button"
-                >
-                  Limpiar rango
-                </button>
-              )}
-            </div>
-
-            <div className="custom-range-inputs">
-              <label>
-                <span>Desde</span>
-                <input
-                  type="datetime-local"
-                  value={customRange.from}
-                  onChange={(e) =>
-                    handleCustomRangeChange("from", e.target.value)
-                  }
-                />
-              </label>
-
-              <label>
-                <span>Hasta</span>
-                <input
-                  type="datetime-local"
-                  value={customRange.to}
-                  onChange={(e) =>
-                    handleCustomRangeChange("to", e.target.value)
-                  }
-                />
-              </label>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="metrics-grid">
-        {METRICS.map((metric) => (
-          <MetricCard
-            key={metric.key}
-            title={metric.title}
-            value={formatValue(
-              latest?.[metric.key],
-              metric.key === "voltaje" ? 2 : 1
-            )}
-            unit={metric.unit}
-            color={metric.color}
-          />
-        ))}
-      </section>
-
-      <section className="main-visual-grid">
-        <div className="featured-chart-card">
-          <div className="section-header">
+        <section className="panel-card chart-panel">
+          <div className="section-header chart-header">
             <div>
               <h2>Gráfica principal en tiempo real</h2>
               <p>
@@ -454,85 +491,70 @@ export default function App() {
               </p>
             </div>
 
-            <div className="chart-summary-badges">
+            <div className="summary-pill-group">
               <span>{filteredItems.length} registros</span>
-              <span>{visibleMetricList.length} métricas visibles</span>
-              <span>Métrica destacada: {selectedMetricMeta.title}</span>
+              <span>{visibleSeries.length} series visibles</span>
+              <span>{activeDeviceCount} dispositivos en gráfica</span>
             </div>
           </div>
 
-          <div className="controls-grid">
-            <div className="control-card">
-              <div className="control-card-header">
-                <h3>Métrica destacada</h3>
-                <span>Selecciona la variable principal</span>
-              </div>
-
-              <div className="metric-tabs">
-                {METRICS.map((metric) => (
-                  <button
-                    key={metric.key}
-                    className={
-                      selectedMetric === metric.key
-                        ? "metric-tab active"
-                        : visibleMetrics[metric.key]
-                        ? "metric-tab"
-                        : "metric-tab is-hidden"
-                    }
-                    onClick={() => handleSelectMetric(metric.key)}
-                    type="button"
-                  >
-                    {metric.title}
-                  </button>
-                ))}
-              </div>
+          <div className="chart-top-controls">
+            <div className="filter-buttons">
+              {Object.entries(FILTERS).map(([key, value]) => (
+                <button
+                  key={key}
+                  className={filter === key ? "filter-btn active" : "filter-btn"}
+                  onClick={() => setFilter(key)}
+                  type="button"
+                >
+                  {value.label}
+                </button>
+              ))}
             </div>
 
-            <div className="control-card">
-              <div className="control-card-header">
-                <h3>Visibilidad de métricas</h3>
-                <span>Muestra u oculta líneas en la gráfica principal</span>
+            <div className="custom-range-box">
+              <div className="custom-range-header">
+                <span>Rango personalizado</span>
+                {isCustomRangeActive && (
+                  <button className="ghost-btn" onClick={clearCustomRange} type="button">
+                    Limpiar rango
+                  </button>
+                )}
               </div>
 
-              <div className="visibility-actions">
-                <button className="ghost-btn" onClick={showAllMetrics} type="button">
-                  Mostrar todas
-                </button>
-                <button className="ghost-btn" onClick={hideAllMetrics} type="button">
-                  Ocultar todas
-                </button>
-              </div>
+              <div className="custom-range-inputs">
+                <label>
+                  <span>Desde</span>
+                  <input
+                    type="datetime-local"
+                    value={customRange.from}
+                    onChange={(e) => handleCustomRangeChange("from", e.target.value)}
+                  />
+                </label>
 
-              <div className="visibility-panel">
-                {METRICS.map((metric) => (
-                  <label className="visibility-item" key={metric.key}>
-                    <input
-                      type="checkbox"
-                      checked={visibleMetrics[metric.key]}
-                      onChange={() => handleToggleMetric(metric.key)}
-                    />
-                    <span
-                      className="visibility-dot"
-                      style={{ backgroundColor: metric.color }}
-                    />
-                    <span>{metric.title}</span>
-                  </label>
-                ))}
+                <label>
+                  <span>Hasta</span>
+                  <input
+                    type="datetime-local"
+                    value={customRange.to}
+                    onChange={(e) => handleCustomRangeChange("to", e.target.value)}
+                  />
+                </label>
               </div>
             </div>
           </div>
 
           <div className="chart-box big-chart">
-            {hasVisibleMetrics && chartData.length > 0 ? (
+            {visibleSeries.length > 0 && chartData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? "#22324a" : "#d9e5d1"} />
                   <XAxis
                     dataKey="label"
-                    tick={{ fontSize: 11, fill: chartTheme.axis }}
+                    tick={{ fontSize: 11, fill: darkMode ? "#9fb0c7" : "#6b7280" }}
                     minTickGap={24}
                   />
-                  <YAxis tick={{ fontSize: 11, fill: chartTheme.axis }} />
+                  <YAxis tick={{ fontSize: 11, fill: darkMode ? "#9fb0c7" : "#6b7280" }} />
                   <Tooltip
                     labelFormatter={(_, payload) =>
                       payload?.[0]?.payload?.receivedAt
@@ -540,69 +562,109 @@ export default function App() {
                         : "--"
                     }
                     formatter={(value, name) => {
-                      const metric = METRICS.find((item) => item.key === name);
-                      const digits = name === "voltaje" ? 2 : 1;
+                      const series = visibleSeries.find((item) => item.key === name);
+                      const metric = getMetricMeta(series?.metricKey);
                       return [
-                        `${formatValue(value, digits)} ${metric?.unit || ""}`,
-                        metric?.title || name,
+                        `${formatValue(value, getMetricDigits(series?.metricKey))} ${metric?.unit || ""}`,
+                        series?.name || name,
                       ];
                     }}
                     contentStyle={{
                       borderRadius: "14px",
-                      border: `1px solid ${chartTheme.tooltipBorder}`,
-                      background: chartTheme.tooltipBg,
+                      border: `1px solid ${darkMode ? "#334155" : "#dce8d6"}`,
+                      background: darkMode ? "#0f172a" : "#ffffff",
                     }}
                   />
                   <Legend />
-                  {visibleMetricList.map((metric) => (
+                  {visibleSeries.map((series) => (
                     <Line
-                      key={metric.key}
+                      key={series.key}
                       type="monotone"
-                      dataKey={metric.key}
-                      stroke={metric.color}
-                      strokeWidth={selectedMetric === metric.key ? 3.5 : 2.2}
-                      strokeOpacity={
-                        selectedMetric === metric.key
-                          ? 1
-                          : visibleMetricList.length > 1
-                          ? 0.45
-                          : 1
-                      }
+                      dataKey={series.key}
+                      name={series.name}
+                      stroke={series.color}
+                      strokeDasharray={series.dash}
+                      strokeWidth={2.4}
                       dot={false}
-                      activeDot={{ r: selectedMetric === metric.key ? 5 : 3 }}
+                      connectNulls={false}
+                      activeDot={{ r: 4 }}
                     />
                   ))}
-                  <Brush
-                    dataKey="label"
-                    height={28}
-                    stroke={selectedMetricMeta.color}
-                    travellerWidth={10}
-                  />
+                  <Brush dataKey="label" height={26} stroke="#8a63ff" travellerWidth={10} />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
               <div className="chart-empty-state">
                 {loading
                   ? "Cargando datos de la gráfica..."
-                  : hasVisibleMetrics
-                  ? "No hay datos dentro del rango seleccionado."
-                  : "No hay métricas visibles. Activa al menos una para mostrar la gráfica."}
+                  : visibleSeries.length === 0
+                  ? "No hay series activas. Selecciona al menos una variable para graficar."
+                  : "No hay datos dentro del rango seleccionado."}
               </div>
             )}
           </div>
-        </div>
+
+          <div className="series-toolbar">
+            <button className="ghost-btn" type="button" onClick={() => setAllSeries(true)}>
+              Mostrar todas
+            </button>
+            <button className="ghost-btn" type="button" onClick={() => setAllSeries(false)}>
+              Ocultar todas
+            </button>
+          </div>
+
+          <div className="series-control-list">
+            {devices.map((device, index) => {
+              const deviceStyle = DEVICE_STYLES[index % DEVICE_STYLES.length];
+              return (
+                <div className="series-device-row" key={device.deviceId}>
+                  <div className="series-device-name">
+                    <span
+                      className="series-device-dot"
+                      style={{ backgroundColor: deviceStyle.dot }}
+                    />
+                    <strong>{device.label}</strong>
+                  </div>
+
+                  <div className="series-device-options">
+                    {device.variables.map((metricKey) => {
+                      const metric = getMetricMeta(metricKey);
+                      const checked = Boolean(seriesVisibility[device.deviceId]?.[metricKey]);
+
+                      return (
+                        <label className="series-option" key={`${device.deviceId}-${metricKey}`}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSeries(device.deviceId, metricKey)}
+                          />
+                          <span
+                            className="series-option-dot"
+                            style={{ backgroundColor: metric.color }}
+                          />
+                          <span>{metric.short}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
       </section>
 
-      <section className="history-section">
+      <section className="panel-card history-section">
         <div className="section-header">
           <div>
             <h2>Historial de variables</h2>
             <p>
-              Registros del rango: <strong>{rangeLabel}</strong>.
+              Registros dentro del rango seleccionado: <strong>{rangeLabel}</strong>
             </p>
           </div>
-          <div className="history-count">
-            Mostrando {Math.min(filteredItems.length, 100)} de {filteredItems.length}
+          <div className="summary-pill-group">
+            <span>Mostrando {historyRows.length}</span>
+            <span>Total filtrado {filteredItems.length}</span>
           </div>
         </div>
 
@@ -611,6 +673,7 @@ export default function App() {
             <thead>
               <tr>
                 <th>Fecha</th>
+                <th>Dispositivo</th>
                 <th>Temperatura</th>
                 <th>Humedad</th>
                 <th>Radiación UV</th>
@@ -619,35 +682,28 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {filteredItems.length > 0 ? (
-                filteredItems.slice(0, 100).map((item) => (
+              {historyRows.length > 0 ? (
+                historyRows.map((item) => (
                   <tr key={`${item.deviceId}-${item.fCnt}-${item.receivedAt}`}>
                     <td data-label="Fecha">{formatDate(item.receivedAt)}</td>
+                    <td data-label="Dispositivo">{deviceMap[item.deviceId]?.label || item.deviceId}</td>
                     <td data-label="Temperatura">
-                      {formatValue(item.temperatura)} °C
+                      {formatValue(item.temperatura, 1)} °C
                     </td>
-                    <td data-label="Humedad">
-                      {formatValue(item.humedad)} %
-                    </td>
+                    <td data-label="Humedad">{formatValue(item.humedad, 1)} %</td>
                     <td data-label="Radiación UV">
-                      {formatValue(item.radiacion_uv)} mW/cm2
+                      {formatValue(item.radiacion_uv, 1)} mW/cm²
                     </td>
-                    <td data-label="Sonido">
-                      {formatValue(item.sonido)} dB
-                    </td>
-                    <td data-label="Voltaje">
-                      {formatValue(item.voltaje, 2)} V
-                    </td>
+                    <td data-label="Sonido">{formatValue(item.sonido, 1)} dB</td>
+                    <td data-label="Voltaje">{formatValue(item.voltaje, 2)} V</td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan="6" className="empty-row">
+                  <td colSpan="7" className="empty-row">
                     {loading
-                      ? "Cargando datos..."
-                      : customRangeError
-                      ? customRangeError
-                      : "No hay registros dentro del rango seleccionado."}
+                      ? "Cargando historial..."
+                      : customRangeError || "No hay registros dentro del rango seleccionado."}
                   </td>
                 </tr>
               )}
