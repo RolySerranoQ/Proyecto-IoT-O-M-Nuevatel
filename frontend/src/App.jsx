@@ -394,18 +394,30 @@ export default function App() {
   const enqueueAlert = useCallback((alertItem) => {
     const queueKey = `${alertItem.deviceId}:${alertItem.metric}:${alertItem.level}`;
 
-    if (queuedAlertKeysRef.current.has(queueKey)) return;
+    console.log("enqueueAlert llamado con:", alertItem);
+    console.log("queueKey:", queueKey);
+    console.log("queuedAlertKeys actuales:", Array.from(queuedAlertKeysRef.current));
+
+    if (queuedAlertKeysRef.current.has(queueKey)) {
+      console.log("Alerta ya estaba en cola, no se agrega");
+      return;
+    }
 
     queuedAlertKeysRef.current.add(queueKey);
 
-    setAlertQueue((prev) => [
-      ...prev,
-      {
-        ...alertItem,
-        queueKey,
-      },
-    ]);
-  }, []);
+    setAlertQueue((prev) => {
+      const next = [
+        ...prev,
+        {
+          ...alertItem,
+          queueKey,
+        },
+      ];
+
+      console.log("Nueva alertQueue:", next);
+      return next;
+    });
+    }, []);
 
   const closeActiveAlert = useCallback(() => {
     setAlertQueue((prev) => {
@@ -442,6 +454,7 @@ export default function App() {
       const safeDevices = Array.isArray(configData) ? configData : [];
       const safeLatest = Array.isArray(latestData) ? latestData : [];
       const safeItems = Array.isArray(listData) ? listData : [];
+      console.log("safeLatest desde backend:", safeLatest);
 
       setDevices(safeDevices);
       setLatestDevices(safeLatest);
@@ -479,16 +492,28 @@ export default function App() {
   useEffect(() => {
     if (!Array.isArray(latestDevices) || latestDevices.length === 0) return;
 
+    console.log("latestDevices en efecto de alertas:", latestDevices);
+
     latestDevices.forEach((deviceEntry) => {
+      console.log("deviceEntry actual:", deviceEntry);
+
       const candidates = getDeviceAlertCandidates(deviceEntry);
+      console.log("candidates:", candidates);
 
       candidates.forEach((status) => {
         const prevKey = `${deviceEntry.deviceId}:${status.metric}`;
         const prevLevel = previousAlertLevelsRef.current[prevKey] || "unknown";
         const currentLevel = status.level || "unknown";
 
+        console.log("Comparando alerta:", {
+          deviceId: deviceEntry.deviceId,
+          metric: status.metric,
+          prevLevel,
+          currentLevel,
+        });
+
         if (ALERT_TRIGGER_LEVELS.has(currentLevel) && prevLevel !== currentLevel) {
-          enqueueAlert({
+          const alertPayload = {
             deviceId: deviceEntry.deviceId,
             deviceLabel: getDeviceLabel(deviceEntry.deviceId),
             metric: status.metric,
@@ -499,7 +524,11 @@ export default function App() {
             label: status.label,
             message: status.message,
             receivedAt: deviceEntry?.latest?.receivedAt || null,
-          });
+          };
+
+          console.log("ENQUEUE ALERT:", alertPayload);
+
+          enqueueAlert(alertPayload);
         }
 
         previousAlertLevelsRef.current[prevKey] = currentLevel;
@@ -702,7 +731,8 @@ export default function App() {
 
   const activeAlert = alertQueue[0] || null;
   const remainingAlerts = Math.max(alertQueue.length - 1, 0);
-
+  console.log("alertQueue actual:", alertQueue);
+  console.log("activeAlert actual:", activeAlert);
   return (
     <div className="app-shell" translate="no">
       <header className="top-header">
