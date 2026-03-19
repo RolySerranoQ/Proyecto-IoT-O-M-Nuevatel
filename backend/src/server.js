@@ -20,10 +20,10 @@ if (missingEnv.length > 0) {
   process.exit(1);
 }
 
-/**
- * Catálogo de dispositivos esperados
- * Ajusta aquí si tus IDs reales en TTN son distintos.
- */
+/* =========================
+   CATÁLOGO DE DISPOSITIVOS
+========================= */
+
 const DEVICE_CATALOG = {
   "dispositivo-1n": {
     label: "Dispositivo 1",
@@ -59,6 +59,10 @@ const DEVICE_CATALOG = {
 
 const DEVICE_IDS = Object.keys(DEVICE_CATALOG);
 
+/* =========================
+   APP
+========================= */
+
 const app = express();
 app.use(express.json());
 
@@ -71,6 +75,10 @@ app.use(
     origin: allowedOrigins
   })
 );
+
+/* =========================
+   HELPERS
+========================= */
 
 function toNumber(value) {
   if (value === undefined || value === null || value === "") return null;
@@ -87,78 +95,129 @@ function firstDefined(obj, keys = []) {
   return null;
 }
 
-function getDecodedValue(decoded, candidates) {
-  return toNumber(firstDefined(decoded, candidates));
-}
-
 function isValidDate(date) {
   return date instanceof Date && !Number.isNaN(date.getTime());
 }
 
+function normalizeDeviceId(value) {
+  if (!value || typeof value !== "string") return "";
+  return value.trim();
+}
+
+function decodeFrmPayloadUtf8(frmPayload) {
+  try {
+    if (!frmPayload) return "";
+    return Buffer.from(frmPayload, "base64").toString("utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function decodeFrmPayloadHex(frmPayload) {
+  try {
+    if (!frmPayload) return "";
+    return Buffer.from(frmPayload, "base64").toString("hex");
+  } catch {
+    return "";
+  }
+}
+
+function parseRawMessage(raw) {
+  const text = typeof raw === "string" ? raw.trim() : "";
+
+  const get = (label) => {
+    const match = text.match(new RegExp(`${label}:\\s*([-\\d.]+)`, "i"));
+    return match ? toNumber(match[1]) : null;
+  };
+
+  return {
+    temperatura: get("T"),
+    humedad: get("H"),
+    radiacion_uv: get("R"),
+    sonido: get("S"),
+    voltaje: get("V")
+  };
+}
+
+function getDecodedValue(decoded, candidates) {
+  return toNumber(firstDefined(decoded, candidates));
+}
+
+function pickMetric(decoded, parsedRaw, decodedKeys, rawKey) {
+  const decodedValue = getDecodedValue(decoded, decodedKeys);
+  if (decodedValue !== null) return decodedValue;
+  return parsedRaw[rawKey] ?? null;
+}
+
 function buildMeasurementDoc(data) {
-  const deviceId = data.end_device_ids?.device_id || "desconocido";
+  const deviceId = normalizeDeviceId(data?.end_device_ids?.device_id);
   const config = DEVICE_CATALOG[deviceId];
 
-  // Si quieres aceptar cualquier dispositivo, aquí podrías quitar esta validación.
   if (!config) {
     return null;
   }
 
   const applicationId =
-    data.end_device_ids?.application_ids?.application_id || "";
-  const devEui = data.end_device_ids?.dev_eui || "";
-  const receivedAt = data.received_at ? new Date(data.received_at) : new Date();
+    data?.end_device_ids?.application_ids?.application_id?.trim() || "";
 
-  const uplink = data.uplink_message || {};
-  const decoded = uplink.decoded_payload || {};
-  const rx0 = uplink.rx_metadata?.[0] || {};
-  const lora = uplink.settings?.data_rate?.lora || {};
+  const devEui = data?.end_device_ids?.dev_eui?.trim() || "";
+  const uplink = data?.uplink_message || {};
+  const decoded =
+    uplink.decoded_payload && typeof uplink.decoded_payload === "object"
+      ? uplink.decoded_payload
+      : {};
 
+  const rx0 = Array.isArray(uplink.rx_metadata) ? uplink.rx_metadata[0] || {} : {};
+  const lora = uplink?.settings?.data_rate?.lora || {};
   const frmPayload = uplink.frm_payload || "";
-  const rawHex = frmPayload
-    ? Buffer.from(frmPayload, "base64").toString("hex")
-    : "";
+  const rawHex = decodeFrmPayloadHex(frmPayload);
 
-  const temperatura = getDecodedValue(decoded, [
-    "temperatura",
-    "temperature",
-    "temp"
-  ]);
+  const rawMessage =
+    firstDefined(decoded, ["raw_message", "rawMessage"]) ||
+    decodeFrmPayloadUtf8(frmPayload) ||
+    "";
 
-  const humedad = getDecodedValue(decoded, [
-    "humedad",
-    "humidity",
-    "hum"
-  ]);
+  const parsedRaw = parseRawMessage(rawMessage);
+
+  const receivedAt = data?.received_at ? new Date(data.received_at) : new Date();
+
+  const temperatura = pickMetric(
+    decoded,
+    parsedRaw,
+    ["temperatura", "temperature", "temp"],
+    "temperatura"
+  );
+
+  const humedad = pickMetric(
+    decoded,
+    parsedRaw,
+    ["humedad", "humidity", "hum"],
+    "humedad"
+  );
 
   const radiacion_uv =
     config.profile === "full"
-      ? getDecodedValue(decoded, [
-          "radiacion_uv",
-          "radiacionUV",
-          "radiacionUv",
-          "uv",
-          "uv_index"
-        ])
+      ? pickMetric(
+          decoded,
+          parsedRaw,
+          ["radiacion_uv", "radiacionUV", "radiacionUv", "uv", "uv_index"],
+          "radiacion_uv"
+        )
       : null;
 
   const sonido =
     config.profile === "full"
-      ? getDecodedValue(decoded, [
-          "sonido",
-          "sound",
-          "ruido"
-        ])
+      ? pickMetric(decoded, parsedRaw, ["sonido", "sound", "ruido"], "sonido")
       : null;
 
   const voltaje =
     config.profile === "full"
-      ? getDecodedValue(decoded, [
-          "voltaje",
-          "voltage",
-          "battery",
-          "bateria"
-        ])
+      ? pickMetric(
+          decoded,
+          parsedRaw,
+          ["voltaje", "voltage", "battery", "bateria"],
+          "voltaje"
+        )
       : null;
 
   return {
@@ -166,7 +225,7 @@ function buildMeasurementDoc(data) {
     deviceProfile: config.profile,
     applicationId,
     devEui,
-    fCnt: uplink.f_cnt ?? null,
+    fCnt: toNumber(uplink.f_cnt),
     receivedAt: isValidDate(receivedAt) ? receivedAt : new Date(),
 
     temperatura,
@@ -175,29 +234,36 @@ function buildMeasurementDoc(data) {
     sonido,
     voltaje,
 
-    rawMessage: firstDefined(decoded, ["raw_message", "rawMessage"]) || "",
+    rawMessage,
     frmPayload,
     rawHex,
 
-    gatewayId: rx0.gateway_ids?.gateway_id ?? "",
-    rssi: toNumber(rx0.rssi),
-    snr: toNumber(rx0.snr),
-    frequency: toNumber(uplink.settings?.frequency),
-    spreadingFactor: toNumber(lora.spreading_factor)
+    gatewayId: rx0?.gateway_ids?.gateway_id || "",
+    rssi: toNumber(rx0?.rssi),
+    snr: toNumber(rx0?.snr),
+    frequency: toNumber(uplink?.settings?.frequency),
+    spreadingFactor: toNumber(lora?.spreading_factor)
   };
 }
 
 async function persistMeasurement(doc) {
-  // Si no llega fCnt, guarda como documento nuevo
   if (doc.fCnt === null || doc.fCnt === undefined) {
     await Measurement.create(doc);
     return;
   }
 
-  await Measurement.updateOne(
-    { deviceId: doc.deviceId, fCnt: doc.fCnt },
+  await Measurement.findOneAndUpdate(
+    {
+      applicationId: doc.applicationId,
+      deviceId: doc.deviceId,
+      fCnt: doc.fCnt
+    },
     { $set: doc },
-    { upsert: true }
+    {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true
+    }
   );
 }
 
@@ -205,14 +271,23 @@ async function persistMeasurement(doc) {
    ENDPOINTS
 ========================= */
 
-app.get("/api/health", (req, res) => {
-  res.json({
-    ok: true,
-    service: "backend-ttn-mongodb",
-    expectedDevices: DEVICE_IDS.length,
-    devices: DEVICE_IDS,
-    time: new Date().toISOString()
-  });
+app.get("/api/health", async (req, res) => {
+  try {
+    const total = await Measurement.countDocuments({
+      deviceId: { $in: DEVICE_IDS }
+    });
+
+    res.json({
+      ok: true,
+      service: "backend-ttn-mongodb",
+      expectedDevices: DEVICE_IDS.length,
+      devices: DEVICE_IDS,
+      totalMeasurements: total,
+      time: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
 app.get("/api/devices/config", (req, res) => {
@@ -401,8 +476,15 @@ app.get("/api/measurements/stats", async (req, res) => {
 
 async function connectMongo() {
   console.log("Intentando conectar a MongoDB...");
-  await mongoose.connect(process.env.MONGODB_URI);
+
+  await mongoose.connect(process.env.MONGODB_URI, {
+    serverSelectionTimeoutMS: 30000
+  });
+
   console.log("Conectado a MongoDB");
+
+  await Measurement.syncIndexes();
+  console.log("Índices sincronizados en MongoDB");
 }
 
 /* =========================
@@ -411,12 +493,7 @@ async function connectMongo() {
 
 function startMqtt() {
   const username = `${process.env.TTN_APP_ID}@${process.env.TTN_TENANT || "ttn"}`;
-  const topicDevice =
-    (process.env.TTN_DEVICE_ID || "+").trim().toLowerCase() === "all"
-      ? "+"
-      : (process.env.TTN_DEVICE_ID || "+").trim();
-
-  const topic = `v3/${username}/devices/${topicDevice}/up`;
+  const topic = `v3/${username}/devices/+/up`;
 
   const client = mqtt.connect(`mqtts://${process.env.TTN_MQTT_HOST}:8883`, {
     username,
@@ -435,22 +512,27 @@ function startMqtt() {
       if (err) {
         console.error("Error al suscribirse:", err.message);
       } else {
-        console.log("Suscripción exitosa");
+        console.log("Suscripción exitosa a todos los dispositivos");
       }
     });
   });
 
-  client.on("message", async (_topic, messageBuffer) => {
+  client.on("message", async (topicName, messageBuffer) => {
     try {
       const text = messageBuffer.toString("utf8");
       const data = JSON.parse(text);
 
-      const incomingDeviceId = data.end_device_ids?.device_id || "desconocido";
+      const incomingDeviceId = normalizeDeviceId(
+        data?.end_device_ids?.device_id || "desconocido"
+      );
+
+      console.log(`[MQTT] topic=${topicName} device=${incomingDeviceId}`);
+
       const doc = buildMeasurementDoc(data);
 
       if (!doc) {
         console.warn(
-          `Uplink ignorado de '${incomingDeviceId}': no está en el catálogo de 6 dispositivos`
+          `[MQTT] uplink ignorado de '${incomingDeviceId}': no está en el catálogo`
         );
         return;
       }
@@ -458,15 +540,15 @@ function startMqtt() {
       await persistMeasurement(doc);
 
       console.log(
-        `Guardado uplink ${doc.deviceId} | perfil=${doc.deviceProfile} | fCnt=${doc.fCnt}`
+        `[MONGO] guardado device=${doc.deviceId} fCnt=${doc.fCnt} temp=${doc.temperatura} hum=${doc.humedad}`
       );
     } catch (error) {
       if (error?.code === 11000) {
-        console.warn("Uplink duplicado ignorado");
+        console.warn("[MONGO] duplicado ignorado");
         return;
       }
 
-      console.error("Error procesando mensaje MQTT:", error.message);
+      console.error("Error procesando mensaje MQTT:", error);
     }
   });
 
@@ -476,6 +558,14 @@ function startMqtt() {
 
   client.on("reconnect", () => {
     console.log("Reconectando a MQTT...");
+  });
+
+  client.on("close", () => {
+    console.log("Conexión MQTT cerrada");
+  });
+
+  client.on("offline", () => {
+    console.log("MQTT offline");
   });
 }
 
