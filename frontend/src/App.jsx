@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Brush,
   CartesianGrid,
@@ -10,10 +10,10 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import "bootstrap/dist/css/bootstrap.min.css";
 import "./App.css";
 
 const API_URL = import.meta.env.VITE_API_URL;
-//const API_URL = import.meta.env.VITE_API_URL || "http://localhost:10000";
 const DEFAULT_WINDOW_MS = 60 * 60 * 1000; // 1 hora
 const MAX_CHART_POINTS = 700;
 
@@ -54,15 +54,17 @@ const DEVICE_LABELS = {
 };
 
 const DEVICE_COLOR_PALETTE = [
-  "#3b82f6", // azul
-  "#f59e0b", // amarillo
-  "#84cc16", // verde
-  "#ef4444", // rojo
-  "#7c3aed", // morado
-  "#94a3b8", // gris
+  "#3b82f6",
+  "#f59e0b",
+  "#84cc16",
+  "#ef4444",
+  "#7c3aed",
+  "#94a3b8",
   "#06b6d4",
   "#ec4899",
 ];
+
+const ALERT_TRIGGER_LEVELS = new Set(["elevado", "critico"]);
 
 function getDeviceLabel(deviceOrId) {
   const deviceId =
@@ -140,10 +142,10 @@ function getDeviceStatus(date) {
 }
 
 function getBucketMs(spanMs) {
-  if (spanMs <= 3 * 60 * 60 * 1000) return 60 * 1000; // 1 min
-  if (spanMs <= 12 * 60 * 60 * 1000) return 5 * 60 * 1000; // 5 min
-  if (spanMs <= 48 * 60 * 60 * 1000) return 15 * 60 * 1000; // 15 min
-  return 60 * 60 * 1000; // 1 hora
+  if (spanMs <= 3 * 60 * 60 * 1000) return 60 * 1000;
+  if (spanMs <= 12 * 60 * 60 * 1000) return 5 * 60 * 1000;
+  if (spanMs <= 48 * 60 * 60 * 1000) return 15 * 60 * 1000;
+  return 60 * 60 * 1000;
 }
 
 function reducePoints(rows, maxPoints = MAX_CHART_POINTS) {
@@ -166,6 +168,26 @@ function getDeviceColor(deviceId, devices) {
   const deviceIndex = devices.findIndex((d) => d.deviceId === deviceId);
   const safeIndex = deviceIndex >= 0 ? deviceIndex : 0;
   return DEVICE_COLOR_PALETTE[safeIndex % DEVICE_COLOR_PALETTE.length];
+}
+
+function getMetricDisplayName(metric) {
+  if (metric === "temperatura") return "Temperatura";
+  if (metric === "humedad") return "Humedad";
+  if (metric === "radiacion_uv") return "Radiación UV";
+  if (metric === "sonido") return "Sonido";
+  return metric;
+}
+
+function getAlertTitle(level) {
+  return level === "critico" ? "Alerta crítica" : "Alerta elevada";
+}
+
+function getAlertHeaderClass(level) {
+  return level === "critico" ? "bg-danger text-white" : "bg-warning text-dark";
+}
+
+function getAlertButtonCloseClass(level) {
+  return level === "critico" ? "btn-close btn-close-white" : "btn-close";
 }
 
 function RealtimeRow({ device, latest }) {
@@ -293,11 +315,45 @@ export default function App() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [alertQueue, setAlertQueue] = useState([]);
+
+  const previousAlertLevelsRef = useRef({});
+  const queuedAlertKeysRef = useRef(new Set());
 
   useEffect(() => {
     document.documentElement.lang = "es";
     document.documentElement.setAttribute("translate", "no");
     document.body.setAttribute("translate", "no");
+  }, []);
+
+  const enqueueAlert = useCallback((alertItem) => {
+    const queueKey = `${alertItem.deviceId}:${alertItem.metric}:${alertItem.level}`;
+
+    if (queuedAlertKeysRef.current.has(queueKey)) return;
+
+    queuedAlertKeysRef.current.add(queueKey);
+
+    setAlertQueue((prev) => [
+      ...prev,
+      {
+        ...alertItem,
+        queueKey,
+      },
+    ]);
+  }, []);
+
+  const closeActiveAlert = useCallback(() => {
+    setAlertQueue((prev) => {
+      if (prev.length === 0) return prev;
+
+      const [first, ...rest] = prev;
+
+      if (first?.queueKey) {
+        queuedAlertKeysRef.current.delete(first.queueKey);
+      }
+
+      return rest;
+    });
   }, []);
 
   const loadData = useCallback(async () => {
@@ -354,6 +410,40 @@ export default function App() {
     const id = setInterval(loadData, 10000);
     return () => clearInterval(id);
   }, [loadData]);
+
+  useEffect(() => {
+    if (!Array.isArray(latestDevices) || latestDevices.length === 0) return;
+
+    latestDevices.forEach((deviceEntry) => {
+      const statusList = [
+        deviceEntry?.alertStatus?.temperatura,
+        deviceEntry?.alertStatus?.humedad,
+      ].filter(Boolean);
+
+      statusList.forEach((status) => {
+        const prevKey = `${deviceEntry.deviceId}:${status.metric}`;
+        const prevLevel = previousAlertLevelsRef.current[prevKey] || "unknown";
+        const currentLevel = status.level || "unknown";
+
+        if (ALERT_TRIGGER_LEVELS.has(currentLevel) && prevLevel !== currentLevel) {
+          enqueueAlert({
+            deviceId: deviceEntry.deviceId,
+            deviceLabel: getDeviceLabel(deviceEntry.deviceId),
+            metric: status.metric,
+            metricLabel: getMetricDisplayName(status.metric),
+            value: status.value,
+            unit: status.unit,
+            level: currentLevel,
+            label: status.label,
+            message: status.message,
+            receivedAt: deviceEntry?.latest?.receivedAt || null,
+          });
+        }
+
+        previousAlertLevelsRef.current[prevKey] = currentLevel;
+      });
+    });
+  }, [latestDevices, enqueueAlert]);
 
   const latestMap = useMemo(() => {
     return Object.fromEntries(
@@ -537,6 +627,9 @@ export default function App() {
     return devices.filter((device) => latestMap[device.deviceId]).length;
   }, [devices, latestMap]);
 
+  const activeAlert = alertQueue[0] || null;
+  const remainingAlerts = Math.max(alertQueue.length - 1, 0);
+
   return (
     <div className="app-shell" translate="no">
       <header className="top-header">
@@ -715,6 +808,88 @@ export default function App() {
           Última actualización: {lastUpdated ? formatDate(lastUpdated) : "--"}
         </div>
       </footer>
+
+      {activeAlert && (
+        <>
+          <div
+            className="modal fade show d-block"
+            tabIndex="-1"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="modal-dialog modal-dialog-centered">
+              <div className="modal-content shadow-lg border-0">
+                <div className={`modal-header ${getAlertHeaderClass(activeAlert.level)}`}>
+                  <h5 className="modal-title fw-bold">
+                    {getAlertTitle(activeAlert.level)}
+                  </h5>
+                  <button
+                    type="button"
+                    className={getAlertButtonCloseClass(activeAlert.level)}
+                    aria-label="Close"
+                    onClick={closeActiveAlert}
+                  />
+                </div>
+
+                <div className="modal-body">
+                  <div className="alert-modal-message">
+                    {activeAlert.message}
+                  </div>
+
+                  <div className="alert-modal-meta">
+                    <div className="alert-modal-meta-item">
+                      <span>Dispositivo</span>
+                      <strong>{activeAlert.deviceLabel}</strong>
+                    </div>
+
+                    <div className="alert-modal-meta-item">
+                      <span>Variable</span>
+                      <strong>{activeAlert.metricLabel}</strong>
+                    </div>
+
+                    <div className="alert-modal-meta-item">
+                      <span>Nivel</span>
+                      <strong className="text-capitalize">{activeAlert.level}</strong>
+                    </div>
+
+                    <div className="alert-modal-meta-item">
+                      <span>Valor</span>
+                      <strong>
+                        {formatValue(activeAlert.value, 1)} {activeAlert.unit || ""}
+                      </strong>
+                    </div>
+
+                    <div className="alert-modal-meta-item full">
+                      <span>Fecha</span>
+                      <strong>{formatDate(activeAlert.receivedAt)}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="modal-footer">
+                  {remainingAlerts > 0 && (
+                    <div className="alert-counter-chip">
+                      {remainingAlerts} alerta(s) pendiente(s)
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    className={`btn ${
+                      activeAlert.level === "critico" ? "btn-danger" : "btn-warning"
+                    } fw-bold`}
+                    onClick={closeActiveAlert}
+                  >
+                    {remainingAlerts > 0 ? "Ver siguiente alerta" : "Cerrar alerta"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="modal-backdrop fade show" />
+        </>
+      )}
     </div>
   );
 }
