@@ -36,13 +36,9 @@ const measurementSchema = new mongoose.Schema(
   }
 );
 
-// Consultas rápidas por dispositivo y tiempo
 measurementSchema.index({ deviceId: 1, receivedAt: -1 });
-
-// Consultas por tiempo global
 measurementSchema.index({ receivedAt: -1 });
 
-// Evitar duplicados por uplink dentro de la app
 measurementSchema.index(
   { applicationId: 1, deviceId: 1, fCnt: 1 },
   {

@@ -60,6 +60,39 @@ const DEVICE_CATALOG = {
 const DEVICE_IDS = Object.keys(DEVICE_CATALOG);
 
 /* =========================
+   REGLAS DE ALERTA
+========================= */
+
+const ALERT_RULES = {
+  temperatura: {
+    idealMin: 19,
+    idealMax: 27,
+    elevatedMax: 32,
+    unit: "°C"
+  },
+  humedad: {
+    idealMin: 33,
+    idealMax: 70,
+    unit: "%"
+  }
+};
+
+const SEVERITY_RANK = {
+  unknown: -1,
+  ideal: 0,
+  baja: 1,
+  elevado: 2,
+  critico: 3
+};
+
+/**
+ * Cache en memoria para detectar cambios de estado.
+ * Más adelante aquí es donde debes enganchar WhatsApp
+ * para enviar solo cuando cambie el nivel.
+ */
+const alertStateCache = new Map();
+
+/* =========================
    APP
 ========================= */
 
@@ -77,7 +110,7 @@ app.use(
 );
 
 /* =========================
-   HELPERS
+   HELPERS GENERALES
 ========================= */
 
 function toNumber(value) {
@@ -148,6 +181,215 @@ function pickMetric(decoded, parsedRaw, decodedKeys, rawKey) {
   if (decodedValue !== null) return decodedValue;
   return parsedRaw[rawKey] ?? null;
 }
+
+/* =========================
+   HELPERS DE ALERTA
+========================= */
+
+function buildMetricStatusBase(metric, value, unit) {
+  return {
+    metric,
+    value: value ?? null,
+    unit,
+    level: "unknown",
+    label: "Sin dato",
+    color: "secondary",
+    modalColor: "secondary",
+    shouldAlert: false,
+    message: `Sin dato de ${metric}`
+  };
+}
+
+function evaluateTemperatura(value, deviceId, deviceLabel) {
+  const n = toNumber(value);
+  const unit = ALERT_RULES.temperatura.unit;
+
+  if (n === null) {
+    return buildMetricStatusBase("temperatura", null, unit);
+  }
+
+  if (n > ALERT_RULES.temperatura.elevatedMax) {
+    return {
+      metric: "temperatura",
+      value: n,
+      unit,
+      level: "critico",
+      label: "Crítico",
+      color: "danger",
+      modalColor: "danger",
+      shouldAlert: true,
+      message: `Temperatura crítica en ${deviceLabel || deviceId}: ${n} ${unit}`
+    };
+  }
+
+  if (n > ALERT_RULES.temperatura.idealMax && n <= ALERT_RULES.temperatura.elevatedMax) {
+    return {
+      metric: "temperatura",
+      value: n,
+      unit,
+      level: "elevado",
+      label: "Elevado",
+      color: "warning",
+      modalColor: "warning",
+      shouldAlert: true,
+      message: `Temperatura elevada en ${deviceLabel || deviceId}: ${n} ${unit}`
+    };
+  }
+
+  if (n >= ALERT_RULES.temperatura.idealMin && n <= ALERT_RULES.temperatura.idealMax) {
+    return {
+      metric: "temperatura",
+      value: n,
+      unit,
+      level: "ideal",
+      label: "Ideal",
+      color: "success",
+      modalColor: "success",
+      shouldAlert: false,
+      message: `Temperatura ideal en ${deviceLabel || deviceId}: ${n} ${unit}`
+    };
+  }
+
+  return {
+    metric: "temperatura",
+    value: n,
+    unit,
+    level: "baja",
+    label: "Baja",
+    color: "info",
+    modalColor: "info",
+    shouldAlert: false,
+    message: `Temperatura baja en ${deviceLabel || deviceId}: ${n} ${unit}`
+  };
+}
+
+function evaluateHumedad(value, deviceId, deviceLabel) {
+  const n = toNumber(value);
+  const unit = ALERT_RULES.humedad.unit;
+
+  if (n === null) {
+    return buildMetricStatusBase("humedad", null, unit);
+  }
+
+  if (n > ALERT_RULES.humedad.idealMax) {
+    return {
+      metric: "humedad",
+      value: n,
+      unit,
+      level: "critico",
+      label: "Crítico",
+      color: "danger",
+      modalColor: "danger",
+      shouldAlert: true,
+      message: `Humedad crítica en ${deviceLabel || deviceId}: ${n} ${unit}`
+    };
+  }
+
+  if (n >= ALERT_RULES.humedad.idealMin && n <= ALERT_RULES.humedad.idealMax) {
+    return {
+      metric: "humedad",
+      value: n,
+      unit,
+      level: "ideal",
+      label: "Ideal",
+      color: "success",
+      modalColor: "success",
+      shouldAlert: false,
+      message: `Humedad ideal en ${deviceLabel || deviceId}: ${n} ${unit}`
+    };
+  }
+
+  return {
+    metric: "humedad",
+    value: n,
+    unit,
+    level: "baja",
+    label: "Baja",
+    color: "info",
+    modalColor: "info",
+    shouldAlert: false,
+    message: `Humedad baja en ${deviceLabel || deviceId}: ${n} ${unit}`
+  };
+}
+
+function buildAlertsFromMeasurement(doc) {
+  const deviceId = doc?.deviceId || "desconocido";
+  const deviceLabel = DEVICE_CATALOG[deviceId]?.label || deviceId;
+
+  const temperaturaStatus = evaluateTemperatura(doc?.temperatura, deviceId, deviceLabel);
+  const humedadStatus = evaluateHumedad(doc?.humedad, deviceId, deviceLabel);
+
+  const alerts = [temperaturaStatus, humedadStatus]
+    .filter((item) => item.shouldAlert)
+    .map((item) => ({
+      metric: item.metric,
+      value: item.value,
+      unit: item.unit,
+      level: item.level,
+      label: item.label,
+      color: item.color,
+      modalColor: item.modalColor,
+      message: item.message
+    }));
+
+  const highestSeverity = [temperaturaStatus, humedadStatus].reduce((acc, curr) => {
+    const accRank = SEVERITY_RANK[acc.level] ?? -1;
+    const currRank = SEVERITY_RANK[curr.level] ?? -1;
+    return currRank > accRank ? curr : acc;
+  }, buildMetricStatusBase("none", null, ""));
+
+  return {
+    temperatura: temperaturaStatus,
+    humedad: humedadStatus,
+    hasAlerts: alerts.length > 0,
+    highestSeverity: highestSeverity.level,
+    alerts
+  };
+}
+
+function buildEmptyAlertBundle() {
+  return {
+    temperatura: buildMetricStatusBase("temperatura", null, ALERT_RULES.temperatura.unit),
+    humedad: buildMetricStatusBase("humedad", null, ALERT_RULES.humedad.unit),
+    hasAlerts: false,
+    highestSeverity: "unknown",
+    alerts: []
+  };
+}
+
+function trackAlertTransitions(doc, alertBundle) {
+  const candidates = [alertBundle.temperatura, alertBundle.humedad];
+
+  candidates.forEach((status) => {
+    const key = `${doc.deviceId}:${status.metric}`;
+    const previousLevel = alertStateCache.get(key) || "unknown";
+    const currentLevel = status.level;
+
+    if (previousLevel !== currentLevel) {
+      alertStateCache.set(key, currentLevel);
+
+      if (status.shouldAlert) {
+        console.warn(
+          `[ALERTA] ${doc.deviceId} | ${status.metric} | ${previousLevel} -> ${currentLevel} | valor=${status.value}${status.unit}`
+        );
+
+        /**
+         * AQUÍ va tu futura integración con WhatsApp
+         * Solo se ejecutará cuando cambie el estado,
+         * no en cada minuto repetido.
+         */
+      } else if (previousLevel === "elevado" || previousLevel === "critico") {
+        console.log(
+          `[ALERTA RESUELTA] ${doc.deviceId} | ${status.metric} | ${previousLevel} -> ${currentLevel}`
+        );
+      }
+    }
+  });
+}
+
+/* =========================
+   DOCUMENTO DE MEDICIÓN
+========================= */
 
 function buildMeasurementDoc(data) {
   const deviceId = normalizeDeviceId(data?.end_device_ids?.device_id);
@@ -268,6 +510,54 @@ async function persistMeasurement(doc) {
 }
 
 /* =========================
+   HELPERS DE RESPUESTA
+========================= */
+
+async function getLatestDocsByDevice() {
+  const latestDocs = await Measurement.aggregate([
+    {
+      $match: {
+        deviceId: { $in: DEVICE_IDS }
+      }
+    },
+    {
+      $sort: {
+        receivedAt: -1,
+        createdAt: -1
+      }
+    },
+    {
+      $group: {
+        _id: "$deviceId",
+        latest: { $first: "$$ROOT" }
+      }
+    }
+  ]);
+
+  return Object.fromEntries(latestDocs.map((item) => [item._id, item.latest]));
+}
+
+function buildDeviceLatestResponse(deviceId, latest) {
+  const config = DEVICE_CATALOG[deviceId];
+  const alertBundle = latest ? buildAlertsFromMeasurement(latest) : buildEmptyAlertBundle();
+
+  return {
+    deviceId,
+    label: config.label,
+    profile: config.profile,
+    variables: config.variables,
+    latest: latest || null,
+    alertStatus: {
+      temperatura: alertBundle.temperatura,
+      humedad: alertBundle.humedad,
+      hasAlerts: alertBundle.hasAlerts,
+      highestSeverity: alertBundle.highestSeverity
+    },
+    alerts: alertBundle.alerts
+  };
+}
+
+/* =========================
    ENDPOINTS
 ========================= */
 
@@ -303,39 +593,50 @@ app.get("/api/devices/config", (req, res) => {
 
 app.get("/api/devices/latest", async (req, res) => {
   try {
-    const latestDocs = await Measurement.aggregate([
-      {
-        $match: {
-          deviceId: { $in: DEVICE_IDS }
-        }
-      },
-      {
-        $sort: {
-          receivedAt: -1,
-          createdAt: -1
-        }
-      },
-      {
-        $group: {
-          _id: "$deviceId",
-          latest: { $first: "$$ROOT" }
-        }
-      }
-    ]);
+    const latestMap = await getLatestDocsByDevice();
 
-    const latestMap = Object.fromEntries(
-      latestDocs.map((item) => [item._id, item.latest])
+    const response = DEVICE_IDS.map((deviceId) =>
+      buildDeviceLatestResponse(deviceId, latestMap[deviceId] || null)
     );
 
-    const response = DEVICE_IDS.map((deviceId) => ({
-      deviceId,
-      label: DEVICE_CATALOG[deviceId].label,
-      profile: DEVICE_CATALOG[deviceId].profile,
-      variables: DEVICE_CATALOG[deviceId].variables,
-      latest: latestMap[deviceId] || null
-    }));
-
     res.json(response);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/alerts/active", async (req, res) => {
+  try {
+    const latestMap = await getLatestDocsByDevice();
+
+    const devices = DEVICE_IDS.map((deviceId) =>
+      buildDeviceLatestResponse(deviceId, latestMap[deviceId] || null)
+    );
+
+    const items = devices
+      .flatMap((device) =>
+        (device.alerts || []).map((alert) => ({
+          deviceId: device.deviceId,
+          deviceLabel: device.label,
+          receivedAt: device.latest?.receivedAt || null,
+          ...alert
+        }))
+      )
+      .sort((a, b) => {
+        const rankA = SEVERITY_RANK[a.level] ?? -1;
+        const rankB = SEVERITY_RANK[b.level] ?? -1;
+
+        if (rankA !== rankB) return rankB - rankA;
+
+        const timeA = a.receivedAt ? new Date(a.receivedAt).getTime() : 0;
+        const timeB = b.receivedAt ? new Date(b.receivedAt).getTime() : 0;
+        return timeB - timeA;
+      });
+
+    res.json({
+      total: items.length,
+      items
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -355,7 +656,23 @@ app.get("/api/measurements/latest", async (req, res) => {
       createdAt: -1
     });
 
-    res.json(item);
+    if (!item) {
+      return res.json(null);
+    }
+
+    const plain = item.toObject();
+    const alertBundle = buildAlertsFromMeasurement(plain);
+
+    res.json({
+      ...plain,
+      alertStatus: {
+        temperatura: alertBundle.temperatura,
+        humedad: alertBundle.humedad,
+        hasAlerts: alertBundle.hasAlerts,
+        highestSeverity: alertBundle.highestSeverity
+      },
+      alerts: alertBundle.alerts
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -538,6 +855,9 @@ function startMqtt() {
       }
 
       await persistMeasurement(doc);
+
+      const alertBundle = buildAlertsFromMeasurement(doc);
+      trackAlertTransitions(doc, alertBundle);
 
       console.log(
         `[MONGO] guardado device=${doc.deviceId} fCnt=${doc.fCnt} temp=${doc.temperatura} hum=${doc.humedad}`
