@@ -318,40 +318,14 @@ input {
   box-shadow: var(--shadow-sm);
 }
 
-.chart-box {
-  width: 100%;
-  height: 440px;
+.device-toggle-wrap {
   margin-bottom: 18px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-  padding: 14px 10px 8px;
-}
-
-.chart-empty {
-  width: 100%;
-  height: 100%;
-  display: grid;
-  place-items: center;
-  border: 1px dashed var(--border);
-  border-radius: 16px;
-  background: #fcfdff;
-  color: var(--muted);
-  text-align: center;
-  padding: 20px;
-}
-
-.selector-panel {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 16px;
 }
 
 .selector-actions {
   display: flex;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .action-btn {
@@ -377,62 +351,112 @@ input {
   border-color: transparent;
 }
 
-.selector-list {
-  display: grid;
+.device-toggle-bar {
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
-.selector-row {
-  display: grid;
-  grid-template-columns: 130px 1fr;
-  gap: 16px;
-  align-items: center;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: #ffffff;
-}
-
-.device-selector,
-.metric-selector {
+.device-toggle-chip {
+  min-height: 56px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 800;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: 0.2s ease;
 }
 
-.device-selector input,
-.metric-selector input {
-  width: 15px;
-  height: 15px;
+.device-toggle-chip:hover {
+  transform: translateY(-1px);
+}
+
+.device-toggle-chip.active {
+  background: linear-gradient(180deg, #ffffff 0%, #f5f9ff 100%);
+  border-color: #c9dbff;
+}
+
+.device-toggle-chip input {
+  width: 16px;
+  height: 16px;
   cursor: pointer;
   accent-color: #4f8cff;
 }
 
-.device-selector-name {
+.device-toggle-name {
+  font-weight: 900;
   color: #0f172a;
+  white-space: nowrap;
 }
 
-.metric-selector-group {
+.device-toggle-color {
+  width: 14px;
+  height: 34px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.metric-chart-card {
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  box-shadow: var(--shadow-sm);
+  padding: 14px 14px 10px;
+}
+
+.metric-chart-title {
   display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 
-.metric-selector {
-  min-height: 34px;
+.metric-chart-title h4 {
+  margin: 0;
+  font-size: clamp(1.5rem, 2vw, 2.2rem);
+  font-weight: 900;
+  color: #3b3b3b;
+}
+
+.metric-chart-title span {
   padding: 6px 10px;
   border-radius: 999px;
   background: #f8fbff;
   border: 1px solid #e5edf8;
-  color: #475569;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
 }
 
-.metric-color-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  flex-shrink: 0;
+.metric-chart-box {
+  width: 100%;
+  height: 300px;
+}
+
+.metric-chart-empty {
+  width: 100%;
+  height: 300px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--border);
+  border-radius: 16px;
+  background: #fcfdff;
+  color: var(--muted);
+  text-align: center;
+  padding: 20px;
 }
 
 .footer-box {
@@ -481,7 +505,7 @@ input {
   min-width: 110px;
   padding: 12px 14px;
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.14);
   text-align: center;
 }
@@ -506,6 +530,10 @@ input {
 
 @media (max-width: 1180px) {
   .chart-head {
+    grid-template-columns: 1fr;
+  }
+
+  .metrics-grid {
     grid-template-columns: 1fr;
   }
 
@@ -554,11 +582,6 @@ input {
     grid-column: 1 / -1;
     justify-content: flex-start;
   }
-
-  .selector-row {
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
 }
 
 @media (max-width: 720px) {
@@ -569,10 +592,6 @@ input {
   .section-card {
     padding: 16px;
     border-radius: 20px;
-  }
-
-  .chart-box {
-    height: 340px;
   }
 
   .range-inputs {
@@ -588,7 +607,17 @@ input {
     width: 100%;
   }
 
-  .metric-selector-group {
-    gap: 10px;
+  .device-toggle-bar {
+    flex-direction: column;
+  }
+
+  .device-toggle-chip {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .metric-chart-box,
+  .metric-chart-empty {
+    height: 280px;
   }
 }

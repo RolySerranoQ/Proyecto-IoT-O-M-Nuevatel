@@ -12,8 +12,7 @@ import {
 } from "recharts";
 import "./App.css";
 
-const API_URL = import.meta.env.VITE_API_URL;
-//const API_URL = import.meta.env.VITE_API_URL || "http://localhost:10000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:10000";
 const DEFAULT_WINDOW_MS = 60 * 60 * 1000; // 1 hora
 const MAX_CHART_POINTS = 700;
 
@@ -32,7 +31,7 @@ const METRICS = [
   },
   {
     key: "radiacion_uv",
-    title: "Rad. UV",
+    title: "Radiación UV",
     short: "Rad UV",
     unit: "mW/cm²",
   },
@@ -53,12 +52,16 @@ const DEVICE_LABELS = {
   "dispositivo-6": "Casita IT",
 };
 
-const METRIC_COLOR_FAMILIES = {
-  temperatura: ["#ff6b6b", "#ff8e72", "#ff9f43", "#f97316", "#fb7185", "#ef4444"],
-  humedad: ["#3b82f6", "#38bdf8", "#60a5fa", "#2563eb", "#0ea5e9", "#1d4ed8"],
-  radiacion_uv: ["#f59e0b", "#facc15", "#eab308", "#fbbf24", "#d97706", "#f4b000"],
-  sonido: ["#a855f7", "#c084fc", "#d946ef", "#9333ea", "#8b5cf6", "#b45309"],
-};
+const DEVICE_COLOR_PALETTE = [
+  "#3b82f6", // azul
+  "#f59e0b", // amarillo
+  "#84cc16", // verde
+  "#ef4444", // rojo
+  "#7c3aed", // morado
+  "#94a3b8", // gris
+  "#06b6d4",
+  "#ec4899",
+];
 
 function getDeviceLabel(deviceOrId) {
   const deviceId =
@@ -68,15 +71,18 @@ function getDeviceLabel(deviceOrId) {
   return DEVICE_LABELS[deviceId] || deviceId;
 }
 
+function getAvailableMetrics(device) {
+  const vars = Array.isArray(device?.variables) ? device.variables : [];
+  return METRICS.filter((metric) => vars.includes(metric.key)).map(
+    (metric) => metric.key
+  );
+}
+
 function getMetricMeta(metricKey) {
   return METRICS.find((metric) => metric.key === metricKey) || METRICS[0];
 }
 
-function getMetricDigits(metricKey) {
-  if (metricKey === "temperatura") return 1;
-  if (metricKey === "humedad") return 1;
-  if (metricKey === "radiacion_uv") return 1;
-  if (metricKey === "sonido") return 1;
+function getMetricDigits() {
   return 1;
 }
 
@@ -116,13 +122,6 @@ function buildSeriesKey(deviceId, metricKey) {
   return `${deviceId}__${metricKey}`;
 }
 
-function getAvailableMetrics(device) {
-  const vars = Array.isArray(device?.variables) ? device.variables : [];
-  return METRICS.filter((metric) => vars.includes(metric.key)).map(
-    (metric) => metric.key
-  );
-}
-
 function getDeviceStatus(date) {
   if (!date) return { text: "Sin datos", tone: "offline" };
 
@@ -153,28 +152,19 @@ function reducePoints(rows, maxPoints = MAX_CHART_POINTS) {
 }
 
 function createInitialSelections(devices) {
-  const selectedDevices = {};
-  const selectedMetrics = {};
+  const next = {};
 
   devices.forEach((device, index) => {
-    const metrics = getAvailableMetrics(device);
-
-    selectedDevices[device.deviceId] = index === 0;
-    selectedMetrics[device.deviceId] = {};
-
-    metrics.forEach((metricKey) => {
-      selectedMetrics[device.deviceId][metricKey] =
-        index === 0 && (metricKey === "temperatura" || metricKey === "humedad");
-    });
+    next[device.deviceId] = index < 2 || devices.length <= 2;
   });
 
-  return { selectedDevices, selectedMetrics };
+  return next;
 }
 
-function getSeriesColor(metricKey, deviceId, devices) {
+function getDeviceColor(deviceId, devices) {
   const deviceIndex = devices.findIndex((d) => d.deviceId === deviceId);
-  const family = METRIC_COLOR_FAMILIES[metricKey] || ["#64748b"];
-  return family[Math.max(0, deviceIndex) % family.length];
+  const safeIndex = deviceIndex >= 0 ? deviceIndex : 0;
+  return DEVICE_COLOR_PALETTE[safeIndex % DEVICE_COLOR_PALETTE.length];
 }
 
 function RealtimeRow({ device, latest }) {
@@ -218,12 +208,86 @@ function RealtimeRow({ device, latest }) {
   );
 }
 
+function MetricChart({ metric, data, series, loading }) {
+  if (!series.length || !data.length) {
+    return (
+      <div className="metric-chart-empty">
+        {loading
+          ? "Cargando gráfica..."
+          : "Selecciona uno o varios dispositivos para comparar."}
+      </div>
+    );
+  }
+
+  return (
+    <div className="metric-chart-box">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart
+          data={data}
+          syncId="realtime-metrics"
+          margin={{ top: 8, right: 14, left: 0, bottom: 8 }}
+        >
+          <CartesianGrid strokeDasharray="4 4" stroke="#e6eaf2" />
+          <XAxis
+            dataKey="label"
+            tick={{ fontSize: 11, fill: "#6b7280" }}
+            minTickGap={22}
+          />
+          <YAxis tick={{ fontSize: 11, fill: "#6b7280" }} width={52} />
+          <Tooltip
+            labelFormatter={(_, payload) =>
+              payload?.[0]?.payload?.receivedAt
+                ? formatDate(payload[0].payload.receivedAt)
+                : "--"
+            }
+            formatter={(value, _name, entry) => {
+              const currentSeries = series.find((item) => item.key === entry?.dataKey);
+              return [
+                `${formatValue(value, getMetricDigits(metric.key))} ${metric.unit}`,
+                currentSeries?.name || "",
+              ];
+            }}
+            contentStyle={{
+              borderRadius: "14px",
+              border: "1px solid #dce3ef",
+              background: "#ffffff",
+              boxShadow: "0 12px 30px rgba(15, 23, 42, 0.10)",
+            }}
+          />
+          <Legend wrapperStyle={{ fontSize: "12px", paddingTop: "8px" }} />
+          {series.map((item) => (
+            <Line
+              key={item.key}
+              type="monotone"
+              dataKey={item.key}
+              name={item.name}
+              stroke={item.color}
+              strokeWidth={2.5}
+              dot={false}
+              connectNulls
+              activeDot={{ r: 4 }}
+              isAnimationActive={false}
+            />
+          ))}
+          {data.length > 16 && (
+            <Brush
+              dataKey="label"
+              height={22}
+              stroke="#8b5cf6"
+              travellerWidth={10}
+            />
+          )}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 export default function App() {
   const [devices, setDevices] = useState([]);
   const [latestDevices, setLatestDevices] = useState([]);
   const [items, setItems] = useState([]);
   const [selectedDevices, setSelectedDevices] = useState({});
-  const [selectedMetrics, setSelectedMetrics] = useState({});
   const [customRange, setCustomRange] = useState({ from: "", to: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -263,13 +327,19 @@ export default function App() {
       setLastUpdated(new Date());
 
       setSelectedDevices((prev) => {
-        if (Object.keys(prev).length > 0) return prev;
-        return createInitialSelections(safeDevices).selectedDevices;
-      });
+        const next = { ...prev };
 
-      setSelectedMetrics((prev) => {
-        if (Object.keys(prev).length > 0) return prev;
-        return createInitialSelections(safeDevices).selectedMetrics;
+        if (Object.keys(next).length === 0) {
+          return createInitialSelections(safeDevices);
+        }
+
+        safeDevices.forEach((device, index) => {
+          if (typeof next[device.deviceId] === "undefined") {
+            next[device.deviceId] = index < 2 || safeDevices.length <= 2;
+          }
+        });
+
+        return next;
       });
     } catch (err) {
       setError(err.message || "Error desconocido");
@@ -289,6 +359,18 @@ export default function App() {
       latestDevices.map((device) => [device.deviceId, device.latest || null])
     );
   }, [latestDevices]);
+
+  const deviceMetricsMap = useMemo(() => {
+    return Object.fromEntries(
+      devices.map((device) => [device.deviceId, getAvailableMetrics(device)])
+    );
+  }, [devices]);
+
+  const deviceColorMap = useMemo(() => {
+    return Object.fromEntries(
+      devices.map((device) => [device.deviceId, getDeviceColor(device.deviceId, devices)])
+    );
+  }, [devices]);
 
   const customRangeError = useMemo(() => {
     if (!customRange.from || !customRange.to) return "";
@@ -341,8 +423,8 @@ export default function App() {
     });
   }, [items, selectedDevices, customRange, customRangeActive, customRangeError]);
 
-  const chartData = useMemo(() => {
-    if (filteredItems.length === 0) return [];
+  const spanMs = useMemo(() => {
+    if (filteredItems.length === 0) return DEFAULT_WINDOW_MS;
 
     const firstTs = customRange.from
       ? new Date(customRange.from).getTime()
@@ -352,12 +434,17 @@ export default function App() {
       ? new Date(customRange.to).getTime()
       : new Date(filteredItems[filteredItems.length - 1]?.receivedAt).getTime();
 
-    const safeSpan =
-      Number.isFinite(firstTs) && Number.isFinite(lastTs) && lastTs > firstTs
-        ? lastTs - firstTs
-        : DEFAULT_WINDOW_MS;
+    if (!Number.isFinite(firstTs) || !Number.isFinite(lastTs) || lastTs <= firstTs) {
+      return DEFAULT_WINDOW_MS;
+    }
 
-    const bucketMs = getBucketMs(safeSpan);
+    return lastTs - firstTs;
+  }, [filteredItems, customRange.from, customRange.to]);
+
+  const chartData = useMemo(() => {
+    if (filteredItems.length === 0) return [];
+
+    const bucketMs = getBucketMs(spanMs);
     const grouped = new Map();
 
     filteredItems.forEach((item) => {
@@ -369,20 +456,15 @@ export default function App() {
       if (!grouped.has(bucketTs)) {
         grouped.set(bucketTs, {
           ts: bucketTs,
-          label: formatXAxisLabel(bucketTs, customRangeActive, safeSpan),
+          label: formatXAxisLabel(bucketTs, customRangeActive, spanMs),
           receivedAt: new Date(bucketTs).toISOString(),
         });
       }
 
       const row = grouped.get(bucketTs);
-      const device = devices.find((d) => d.deviceId === item.deviceId);
-      if (!device) return;
-
-      const metrics = getAvailableMetrics(device);
+      const metrics = deviceMetricsMap[item.deviceId] || [];
 
       metrics.forEach((metricKey) => {
-        if (!selectedMetrics[item.deviceId]?.[metricKey]) return;
-
         const rawValue = item[metricKey];
         const numeric =
           rawValue === null || rawValue === undefined ? null : Number(rawValue);
@@ -395,34 +477,26 @@ export default function App() {
 
     const rows = Array.from(grouped.values()).sort((a, b) => a.ts - b.ts);
     return reducePoints(rows);
-  }, [
-    filteredItems,
-    devices,
-    selectedMetrics,
-    customRange.from,
-    customRange.to,
-    customRangeActive,
-  ]);
+  }, [filteredItems, deviceMetricsMap, customRangeActive, spanMs]);
 
-  const visibleSeries = useMemo(() => {
-    return devices.flatMap((device) => {
-      if (!selectedDevices[device.deviceId]) return [];
+  const visibleSeriesByMetric = useMemo(() => {
+    const result = {};
 
-      return getAvailableMetrics(device)
-        .filter((metricKey) => selectedMetrics[device.deviceId]?.[metricKey])
-        .map((metricKey) => {
-          const metric = getMetricMeta(metricKey);
-
-          return {
-            key: buildSeriesKey(device.deviceId, metricKey),
-            deviceId: device.deviceId,
-            metricKey,
-            name: `${getDeviceLabel(device)} • ${metric.short}`,
-            color: getSeriesColor(metricKey, device.deviceId, devices),
-          };
-        });
+    METRICS.forEach((metric) => {
+      result[metric.key] = devices
+        .filter((device) => selectedDevices[device.deviceId])
+        .filter((device) => (deviceMetricsMap[device.deviceId] || []).includes(metric.key))
+        .map((device) => ({
+          key: buildSeriesKey(device.deviceId, metric.key),
+          deviceId: device.deviceId,
+          metricKey: metric.key,
+          name: getDeviceLabel(device),
+          color: deviceColorMap[device.deviceId] || "#64748b",
+        }));
     });
-  }, [devices, selectedDevices, selectedMetrics]);
+
+    return result;
+  }, [devices, selectedDevices, deviceMetricsMap, deviceColorMap]);
 
   const handleRangeChange = (field, value) => {
     setCustomRange((prev) => ({
@@ -442,57 +516,20 @@ export default function App() {
     }));
   };
 
-  const toggleMetric = (deviceId, metricKey) => {
-    const nextValue = !selectedMetrics[deviceId]?.[metricKey];
-
-    setSelectedMetrics((prev) => ({
-      ...prev,
-      [deviceId]: {
-        ...(prev[deviceId] || {}),
-        [metricKey]: nextValue,
-      },
-    }));
-
-    if (nextValue) {
-      setSelectedDevices((prev) => ({
-        ...prev,
-        [deviceId]: true,
-      }));
-    }
+  const showAllDevices = () => {
+    const next = {};
+    devices.forEach((device) => {
+      next[device.deviceId] = true;
+    });
+    setSelectedDevices(next);
   };
 
-  const showAllSeries = () => {
-    const nextDevices = {};
-    const nextMetrics = {};
-
+  const hideAllDevices = () => {
+    const next = {};
     devices.forEach((device) => {
-      nextDevices[device.deviceId] = true;
-      nextMetrics[device.deviceId] = {};
-
-      getAvailableMetrics(device).forEach((metricKey) => {
-        nextMetrics[device.deviceId][metricKey] = true;
-      });
+      next[device.deviceId] = false;
     });
-
-    setSelectedDevices(nextDevices);
-    setSelectedMetrics(nextMetrics);
-  };
-
-  const hideAllSeries = () => {
-    const nextDevices = {};
-    const nextMetrics = {};
-
-    devices.forEach((device) => {
-      nextDevices[device.deviceId] = false;
-      nextMetrics[device.deviceId] = {};
-
-      getAvailableMetrics(device).forEach((metricKey) => {
-        nextMetrics[device.deviceId][metricKey] = false;
-      });
-    });
-
-    setSelectedDevices(nextDevices);
-    setSelectedMetrics(nextMetrics);
+    setSelectedDevices(next);
   };
 
   const activeDevicesCount = useMemo(() => {
@@ -552,10 +589,10 @@ export default function App() {
       <section className="section-card chart-section">
         <div className="chart-head">
           <div>
-            <h3>Gráfica principal en tiempo real</h3>
+            <h3>Gráficas principales en tiempo real</h3>
             <p>
-              Selecciona varios dispositivos y variables para compararlos en la
-              misma gráfica.
+              Activa uno o varios dispositivos para compararlos sobre las mismas
+              gráficas en tiempo real.
             </p>
           </div>
 
@@ -590,135 +627,61 @@ export default function App() {
           </div>
         </div>
 
-        <div className="chart-box">
-          {visibleSeries.length > 0 && chartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 10, right: 20, left: 4, bottom: 8 }}>
-                <CartesianGrid strokeDasharray="4 4" stroke="#e6eaf2" />
-                <XAxis
-                  dataKey="label"
-                  tick={{ fontSize: 11, fill: "#6b7280" }}
-                  minTickGap={22}
-                />
-                <YAxis
-                  tick={{ fontSize: 11, fill: "#6b7280" }}
-                  width={50}
-                />
-                <Tooltip
-                  labelFormatter={(_, payload) =>
-                    payload?.[0]?.payload?.receivedAt
-                      ? formatDate(payload[0].payload.receivedAt)
-                      : "--"
-                  }
-                  formatter={(value, _name, entry) => {
-                    const series = visibleSeries.find(
-                      (item) => item.key === entry?.dataKey
-                    );
-                    const metric = getMetricMeta(series?.metricKey);
-
-                    return [
-                      `${formatValue(value, getMetricDigits(series?.metricKey))} ${
-                        metric?.unit || ""
-                      }`,
-                      series?.name || "",
-                    ];
-                  }}
-                  contentStyle={{
-                    borderRadius: "14px",
-                    border: "1px solid #dce3ef",
-                    background: "#ffffff",
-                    boxShadow: "0 12px 30px rgba(15, 23, 42, 0.10)",
-                  }}
-                />
-                <Legend wrapperStyle={{ fontSize: "12px" }} />
-                {visibleSeries.map((series) => (
-                  <Line
-                    key={series.key}
-                    type="monotone"
-                    dataKey={series.key}
-                    name={series.name}
-                    stroke={series.color}
-                    strokeWidth={2.6}
-                    dot={false}
-                    connectNulls
-                    activeDot={{ r: 4 }}
-                    isAnimationActive={false}
-                  />
-                ))}
-                {chartData.length > 16 && (
-                  <Brush
-                    dataKey="label"
-                    height={24}
-                    stroke="#8b5cf6"
-                    travellerWidth={10}
-                  />
-                )}
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="chart-empty">
-              {loading
-                ? "Cargando gráfica..."
-                : "Selecciona uno o varios dispositivos y variables para comparar."}
-            </div>
-          )}
-        </div>
-
-        <div className="selector-panel">
+        <div className="device-toggle-wrap">
           <div className="selector-actions">
-            <button type="button" className="action-btn primary-btn" onClick={showAllSeries}>
-              Mostrar todas
+            <button type="button" className="action-btn primary-btn" onClick={showAllDevices}>
+              Mostrar todos
             </button>
-            <button type="button" className="action-btn" onClick={hideAllSeries}>
-              Ocultar todas
+            <button type="button" className="action-btn" onClick={hideAllDevices}>
+              Ocultar todos
             </button>
           </div>
 
-          <div className="selector-list">
+          <div className="device-toggle-bar">
             {devices.map((device) => {
-              const metrics = getAvailableMetrics(device);
+              const checked = Boolean(selectedDevices[device.deviceId]);
+              const color = deviceColorMap[device.deviceId] || "#64748b";
 
               return (
-                <div className="selector-row" key={device.deviceId}>
-                  <label className="device-selector" translate="no">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(selectedDevices[device.deviceId])}
-                      onChange={() => toggleDevice(device.deviceId)}
-                    />
-                    <span className="device-selector-name">
-                      {getDeviceLabel(device)}
-                    </span>
-                  </label>
-
-                  <div className="metric-selector-group">
-                    {metrics.map((metricKey) => {
-                      const metric = getMetricMeta(metricKey);
-                      const color = getSeriesColor(metricKey, device.deviceId, devices);
-
-                      return (
-                        <label
-                          key={`${device.deviceId}-${metricKey}`}
-                          className="metric-selector"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={Boolean(selectedMetrics[device.deviceId]?.[metricKey])}
-                            onChange={() => toggleMetric(device.deviceId, metricKey)}
-                          />
-                          <span
-                            className="metric-color-dot"
-                            style={{ backgroundColor: color }}
-                          />
-                          <span>{metric.short}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
+                <label
+                  className={`device-toggle-chip ${checked ? "active" : ""}`}
+                  key={device.deviceId}
+                  translate="no"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleDevice(device.deviceId)}
+                  />
+                  <span className="device-toggle-name">{getDeviceLabel(device)}</span>
+                  <span
+                    className="device-toggle-color"
+                    style={{ backgroundColor: color }}
+                  />
+                </label>
               );
             })}
           </div>
+        </div>
+
+        <div className="metrics-grid">
+          {METRICS.map((metric) => (
+            <div className="metric-chart-card" key={metric.key}>
+              <div className="metric-chart-title">
+                <h4>{metric.title}</h4>
+                <span>
+                  {(visibleSeriesByMetric[metric.key] || []).length} dispositivo(s)
+                </span>
+              </div>
+
+              <MetricChart
+                metric={metric}
+                data={chartData}
+                series={visibleSeriesByMetric[metric.key] || []}
+                loading={loading}
+              />
+            </div>
+          ))}
         </div>
       </section>
 
@@ -743,7 +706,7 @@ export default function App() {
           </div>
           <div className="footer-chip">
             <strong>{selectedDeviceIds.length}</strong>
-            <span>En gráfica</span>
+            <span>Seleccionados</span>
           </div>
         </div>
 
