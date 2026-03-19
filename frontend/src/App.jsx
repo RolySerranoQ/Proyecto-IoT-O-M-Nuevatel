@@ -12,7 +12,8 @@ import {
 } from "recharts";
 import "./App.css";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:10000";
+const API_URL = import.meta.env.VITE_API_URL;
+//const API_URL = import.meta.env.VITE_API_URL || "http://localhost:10000";
 const DEFAULT_WINDOW_MS = 60 * 60 * 1000; // 1 hora
 const MAX_CHART_POINTS = 700;
 
