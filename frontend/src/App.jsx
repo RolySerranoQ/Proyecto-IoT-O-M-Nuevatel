@@ -67,10 +67,6 @@ function getAvailableMetrics(device) {
   );
 }
 
-function getMetricDigits() {
-  return 1;
-}
-
 function formatValue(value, digits = 1) {
   if (value === null || value === undefined || value === "") return "--";
   const n = Number(value);
@@ -170,11 +166,22 @@ function getAlertButtonCloseClass(level) {
   return level === "critico" ? "btn-close btn-close-white" : "btn-close";
 }
 
-function evaluateTemperatureFrontend(value, deviceId) {
+function evaluateTemperature(value, deviceId) {
   const n = toNumber(value);
   const deviceLabel = getDeviceLabel(deviceId);
 
-  if (n === null) return null;
+  if (n === null) {
+    return {
+      metric: "temperatura",
+      metricLabel: "Temperatura",
+      value: null,
+      unit: "°C",
+      level: "unknown",
+      label: "Sin dato",
+      shouldAlert: false,
+      message: `Sin dato de temperatura en ${deviceLabel}`,
+    };
+  }
 
   if (n > 32) {
     return {
@@ -184,6 +191,7 @@ function evaluateTemperatureFrontend(value, deviceId) {
       unit: "°C",
       level: "critico",
       label: "Crítico",
+      shouldAlert: true,
       message: `Temperatura crítica en ${deviceLabel}: ${n} °C`,
     };
   }
@@ -196,18 +204,52 @@ function evaluateTemperatureFrontend(value, deviceId) {
       unit: "°C",
       level: "elevado",
       label: "Elevado",
+      shouldAlert: true,
       message: `Temperatura elevada en ${deviceLabel}: ${n} °C`,
     };
   }
 
-  return null;
+  if (n >= 19 && n <= 27) {
+    return {
+      metric: "temperatura",
+      metricLabel: "Temperatura",
+      value: n,
+      unit: "°C",
+      level: "ideal",
+      label: "Ideal",
+      shouldAlert: false,
+      message: `Temperatura ideal en ${deviceLabel}: ${n} °C`,
+    };
+  }
+
+  return {
+    metric: "temperatura",
+    metricLabel: "Temperatura",
+    value: n,
+    unit: "°C",
+    level: "baja",
+    label: "Baja",
+    shouldAlert: false,
+    message: `Temperatura baja en ${deviceLabel}: ${n} °C`,
+  };
 }
 
-function evaluateHumidityFrontend(value, deviceId) {
+function evaluateHumidity(value, deviceId) {
   const n = toNumber(value);
   const deviceLabel = getDeviceLabel(deviceId);
 
-  if (n === null) return null;
+  if (n === null) {
+    return {
+      metric: "humedad",
+      metricLabel: "Humedad",
+      value: null,
+      unit: "%",
+      level: "unknown",
+      label: "Sin dato",
+      shouldAlert: false,
+      message: `Sin dato de humedad en ${deviceLabel}`,
+    };
+  }
 
   if (n > 70) {
     return {
@@ -217,47 +259,52 @@ function evaluateHumidityFrontend(value, deviceId) {
       unit: "%",
       level: "critico",
       label: "Crítico",
+      shouldAlert: true,
       message: `Humedad crítica en ${deviceLabel}: ${n} %`,
     };
   }
 
-  return null;
-}
-
-function getAlertCandidateFromStatus(status) {
-  if (!status || !ALERT_TRIGGER_LEVELS.has(status.level)) return null;
+  if (n >= 33 && n <= 70) {
+    return {
+      metric: "humedad",
+      metricLabel: "Humedad",
+      value: n,
+      unit: "%",
+      level: "ideal",
+      label: "Ideal",
+      shouldAlert: false,
+      message: `Humedad ideal en ${deviceLabel}: ${n} %`,
+    };
+  }
 
   return {
-    metric: status.metric,
-    metricLabel: getMetricDisplayName(status.metric),
-    value: status.value,
-    unit: status.unit,
-    level: status.level,
-    label: status.label,
-    message: status.message,
+    metric: "humedad",
+    metricLabel: "Humedad",
+    value: n,
+    unit: "%",
+    level: "baja",
+    label: "Baja",
+    shouldAlert: false,
+    message: `Humedad baja en ${deviceLabel}: ${n} %`,
   };
 }
 
-function getDeviceAlertCandidates(deviceEntry) {
-  const backendTemp = getAlertCandidateFromStatus(deviceEntry?.alertStatus?.temperatura);
-  const backendHum = getAlertCandidateFromStatus(deviceEntry?.alertStatus?.humedad);
+function getCurrentStatuses(deviceEntry) {
+  const deviceId = deviceEntry?.deviceId || "";
+  const latest = deviceEntry?.latest || {};
 
-  const fallbackTemp = evaluateTemperatureFrontend(
-    deviceEntry?.latest?.temperatura,
-    deviceEntry?.deviceId
-  );
-
-  const fallbackHum = evaluateHumidityFrontend(
-    deviceEntry?.latest?.humedad,
-    deviceEntry?.deviceId
-  );
-
-  return [backendTemp || fallbackTemp, backendHum || fallbackHum].filter(Boolean);
+  return [
+    evaluateTemperature(latest.temperatura, deviceId),
+    evaluateHumidity(latest.humedad, deviceId),
+  ];
 }
 
-function RealtimeRow({ device, latest }) {
+function RealtimeRow({ device, latest, alertInfo }) {
   const status = getDeviceStatus(latest?.receivedAt);
   const metrics = getAvailableMetrics(device);
+
+  const tempLevel = alertInfo?.temperatura?.level;
+  const humLevel = alertInfo?.humedad?.level;
 
   return (
     <div className="realtime-row">
@@ -266,15 +313,32 @@ function RealtimeRow({ device, latest }) {
       </div>
 
       <div className="value-cell">
-        {metrics.includes("temperatura")
-          ? `${formatValue(latest?.temperatura, 1)} °C`
-          : "--"}
+        <div className="d-flex align-items-center justify-content-center gap-2 flex-wrap">
+          <span>
+            {metrics.includes("temperatura")
+              ? `${formatValue(latest?.temperatura, 1)} °C`
+              : "--"}
+          </span>
+          {tempLevel === "elevado" && (
+            <span className="badge text-bg-warning">Elevado</span>
+          )}
+          {tempLevel === "critico" && (
+            <span className="badge text-bg-danger">Crítico</span>
+          )}
+        </div>
       </div>
 
       <div className="value-cell">
-        {metrics.includes("humedad")
-          ? `${formatValue(latest?.humedad, 1)} %`
-          : "--"}
+        <div className="d-flex align-items-center justify-content-center gap-2 flex-wrap">
+          <span>
+            {metrics.includes("humedad")
+              ? `${formatValue(latest?.humedad, 1)} %`
+              : "--"}
+          </span>
+          {humLevel === "critico" && (
+            <span className="badge text-bg-danger">Crítico</span>
+          )}
+        </div>
       </div>
 
       <div className="value-cell">
@@ -331,7 +395,7 @@ function MetricChart({ metric, data, series, loading }) {
             formatter={(value, _name, entry) => {
               const currentSeries = series.find((item) => item.key === entry?.dataKey);
               return [
-                `${formatValue(value, getMetricDigits(metric.key))} ${metric.unit}`,
+                `${formatValue(value, 1)} ${metric.unit}`,
                 currentSeries?.name || "",
               ];
             }}
@@ -382,8 +446,8 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [alertQueue, setAlertQueue] = useState([]);
 
-  const previousAlertLevelsRef = useRef({});
-  const queuedAlertKeysRef = useRef(new Set());
+  const previousLevelsRef = useRef({});
+  const queuedKeysRef = useRef(new Set());
 
   useEffect(() => {
     document.documentElement.lang = "es";
@@ -394,41 +458,64 @@ export default function App() {
   const enqueueAlert = useCallback((alertItem) => {
     const queueKey = `${alertItem.deviceId}:${alertItem.metric}:${alertItem.level}`;
 
-    console.log("enqueueAlert llamado con:", alertItem);
-    console.log("queueKey:", queueKey);
-    console.log("queuedAlertKeys actuales:", Array.from(queuedAlertKeysRef.current));
+    if (queuedKeysRef.current.has(queueKey)) return;
 
-    if (queuedAlertKeysRef.current.has(queueKey)) {
-      console.log("Alerta ya estaba en cola, no se agrega");
-      return;
-    }
+    queuedKeysRef.current.add(queueKey);
 
-    queuedAlertKeysRef.current.add(queueKey);
+    setAlertQueue((prev) => [
+      ...prev,
+      {
+        ...alertItem,
+        queueKey,
+      },
+    ]);
+  }, []);
 
-    setAlertQueue((prev) => {
-      const next = [
-        ...prev,
-        {
-          ...alertItem,
-          queueKey,
-        },
-      ];
+  const processAlertsFromLatest = useCallback(
+    (latestArray) => {
+      if (!Array.isArray(latestArray)) return;
 
-      console.log("Nueva alertQueue:", next);
-      return next;
-    });
-    }, []);
+      latestArray.forEach((deviceEntry) => {
+        const statuses = getCurrentStatuses(deviceEntry);
+
+        statuses.forEach((status) => {
+          const refKey = `${deviceEntry.deviceId}:${status.metric}`;
+          const prevLevel = previousLevelsRef.current[refKey] || "unknown";
+          const currentLevel = status.level || "unknown";
+
+          if (
+            ALERT_TRIGGER_LEVELS.has(currentLevel) &&
+            prevLevel !== currentLevel
+          ) {
+            enqueueAlert({
+              deviceId: deviceEntry.deviceId,
+              deviceLabel: getDeviceLabel(deviceEntry.deviceId),
+              metric: status.metric,
+              metricLabel: status.metricLabel || getMetricDisplayName(status.metric),
+              value: status.value,
+              unit: status.unit,
+              level: currentLevel,
+              label: status.label,
+              message: status.message,
+              receivedAt: deviceEntry?.latest?.receivedAt || null,
+            });
+          }
+
+          previousLevelsRef.current[refKey] = currentLevel;
+        });
+      });
+    },
+    [enqueueAlert]
+  );
 
   const closeActiveAlert = useCallback(() => {
     setAlertQueue((prev) => {
       if (prev.length === 0) return prev;
 
       const [first, ...rest] = prev;
-
       if (first?.queueKey) {
-        queuedAlertKeysRef.current.delete(first.queueKey);
+        queuedKeysRef.current.delete(first.queueKey);
       }
-
       return rest;
     });
   }, []);
@@ -454,12 +541,13 @@ export default function App() {
       const safeDevices = Array.isArray(configData) ? configData : [];
       const safeLatest = Array.isArray(latestData) ? latestData : [];
       const safeItems = Array.isArray(listData) ? listData : [];
-      console.log("safeLatest desde backend:", safeLatest);
 
       setDevices(safeDevices);
       setLatestDevices(safeLatest);
       setItems(safeItems);
       setLastUpdated(new Date());
+
+      processAlertsFromLatest(safeLatest);
 
       setSelectedDevices((prev) => {
         const next = { ...prev };
@@ -481,7 +569,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [processAlertsFromLatest]);
 
   useEffect(() => {
     loadData();
@@ -489,67 +577,30 @@ export default function App() {
     return () => clearInterval(id);
   }, [loadData]);
 
-  useEffect(() => {
-    if (!Array.isArray(latestDevices) || latestDevices.length === 0) return;
-
-    console.log("latestDevices en efecto de alertas:", latestDevices);
-
-    latestDevices.forEach((deviceEntry) => {
-      console.log("deviceEntry actual:", deviceEntry);
-
-      const candidates = getDeviceAlertCandidates(deviceEntry);
-      console.log("candidates:", candidates);
-
-      candidates.forEach((status) => {
-        const prevKey = `${deviceEntry.deviceId}:${status.metric}`;
-        const prevLevel = previousAlertLevelsRef.current[prevKey] || "unknown";
-        const currentLevel = status.level || "unknown";
-
-        console.log("Comparando alerta:", {
-          deviceId: deviceEntry.deviceId,
-          metric: status.metric,
-          prevLevel,
-          currentLevel,
-        });
-
-        if (ALERT_TRIGGER_LEVELS.has(currentLevel) && prevLevel !== currentLevel) {
-          const alertPayload = {
-            deviceId: deviceEntry.deviceId,
-            deviceLabel: getDeviceLabel(deviceEntry.deviceId),
-            metric: status.metric,
-            metricLabel: status.metricLabel,
-            value: status.value,
-            unit: status.unit,
-            level: currentLevel,
-            label: status.label,
-            message: status.message,
-            receivedAt: deviceEntry?.latest?.receivedAt || null,
-          };
-
-          console.log("ENQUEUE ALERT:", alertPayload);
-
-          enqueueAlert(alertPayload);
-        }
-
-        previousAlertLevelsRef.current[prevKey] = currentLevel;
-      });
-
-      const hasTemp = candidates.some((item) => item.metric === "temperatura");
-      const hasHum = candidates.some((item) => item.metric === "humedad");
-
-      if (!hasTemp) {
-        previousAlertLevelsRef.current[`${deviceEntry.deviceId}:temperatura`] = "ideal";
-      }
-
-      if (!hasHum) {
-        previousAlertLevelsRef.current[`${deviceEntry.deviceId}:humedad`] = "ideal";
-      }
-    });
-  }, [latestDevices, enqueueAlert]);
-
   const latestMap = useMemo(() => {
     return Object.fromEntries(
       latestDevices.map((device) => [device.deviceId, device.latest || null])
+    );
+  }, [latestDevices]);
+
+  const currentAlertStatusMap = useMemo(() => {
+    return Object.fromEntries(
+      latestDevices.map((deviceEntry) => {
+        const statuses = getCurrentStatuses(deviceEntry);
+        return [
+          deviceEntry.deviceId,
+          {
+            temperatura: statuses.find((s) => s.metric === "temperatura") || null,
+            humedad: statuses.find((s) => s.metric === "humedad") || null,
+          },
+        ];
+      })
+    );
+  }, [latestDevices]);
+
+  const activeAlertsNow = useMemo(() => {
+    return latestDevices.flatMap((deviceEntry) =>
+      getCurrentStatuses(deviceEntry).filter((status) => status.shouldAlert)
     );
   }, [latestDevices]);
 
@@ -731,8 +782,7 @@ export default function App() {
 
   const activeAlert = alertQueue[0] || null;
   const remainingAlerts = Math.max(alertQueue.length - 1, 0);
-  console.log("alertQueue actual:", alertQueue);
-  console.log("activeAlert actual:", activeAlert);
+
   return (
     <div className="app-shell" translate="no">
       <header className="top-header">
@@ -753,6 +803,14 @@ export default function App() {
 
       {(error || customRangeError) && (
         <div className="alert-box">Error: {customRangeError || error}</div>
+      )}
+
+      {activeAlertsNow.length > 0 && (
+        <div className="mb-3 d-flex flex-wrap gap-2">
+          <span className="badge text-bg-danger fs-6">
+            Alertas activas: {activeAlertsNow.length}
+          </span>
+        </div>
       )}
 
       <section className="section-card">
@@ -777,6 +835,7 @@ export default function App() {
                 key={device.deviceId}
                 device={device}
                 latest={latestMap[device.deviceId]}
+                alertInfo={currentAlertStatusMap[device.deviceId]}
               />
             ))}
           </div>
@@ -905,6 +964,10 @@ export default function App() {
             <strong>{selectedDeviceIds.length}</strong>
             <span>Seleccionados</span>
           </div>
+          <div className="footer-chip">
+            <strong>{activeAlertsNow.length}</strong>
+            <span>Alertas activas</span>
+          </div>
         </div>
 
         <div className="footer-update">
@@ -935,45 +998,62 @@ export default function App() {
                 </div>
 
                 <div className="modal-body">
-                  <div className="alert-modal-message">
+                  <div
+                    className="mb-3 p-3 rounded"
+                    style={{
+                      background: "#f8fbff",
+                      border: "1px solid #e4edf8",
+                      fontWeight: 700,
+                    }}
+                  >
                     {activeAlert.message}
                   </div>
 
-                  <div className="alert-modal-meta">
-                    <div className="alert-modal-meta-item">
-                      <span>Dispositivo</span>
-                      <strong>{activeAlert.deviceLabel}</strong>
+                  <div className="row g-3">
+                    <div className="col-12 col-md-6">
+                      <div className="border rounded p-3 h-100">
+                        <div className="text-muted small fw-bold">Dispositivo</div>
+                        <div className="fw-bold">{activeAlert.deviceLabel}</div>
+                      </div>
                     </div>
 
-                    <div className="alert-modal-meta-item">
-                      <span>Variable</span>
-                      <strong>{activeAlert.metricLabel}</strong>
+                    <div className="col-12 col-md-6">
+                      <div className="border rounded p-3 h-100">
+                        <div className="text-muted small fw-bold">Variable</div>
+                        <div className="fw-bold">{activeAlert.metricLabel}</div>
+                      </div>
                     </div>
 
-                    <div className="alert-modal-meta-item">
-                      <span>Nivel</span>
-                      <strong className="text-capitalize">{activeAlert.level}</strong>
+                    <div className="col-12 col-md-6">
+                      <div className="border rounded p-3 h-100">
+                        <div className="text-muted small fw-bold">Nivel</div>
+                        <div className="fw-bold text-capitalize">{activeAlert.level}</div>
+                      </div>
                     </div>
 
-                    <div className="alert-modal-meta-item">
-                      <span>Valor</span>
-                      <strong>
-                        {formatValue(activeAlert.value, 1)} {activeAlert.unit || ""}
-                      </strong>
+                    <div className="col-12 col-md-6">
+                      <div className="border rounded p-3 h-100">
+                        <div className="text-muted small fw-bold">Valor</div>
+                        <div className="fw-bold">
+                          {formatValue(activeAlert.value, 1)} {activeAlert.unit || ""}
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="alert-modal-meta-item full">
-                      <span>Fecha</span>
-                      <strong>{formatDate(activeAlert.receivedAt)}</strong>
+                    <div className="col-12">
+                      <div className="border rounded p-3">
+                        <div className="text-muted small fw-bold">Fecha</div>
+                        <div className="fw-bold">{formatDate(activeAlert.receivedAt)}</div>
+                      </div>
                     </div>
                   </div>
                 </div>
 
                 <div className="modal-footer">
                   {remainingAlerts > 0 && (
-                    <div className="alert-counter-chip">
+                    <span className="badge text-bg-secondary me-auto">
                       {remainingAlerts} alerta(s) pendiente(s)
-                    </div>
+                    </span>
                   )}
 
                   <button
