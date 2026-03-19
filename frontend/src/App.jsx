@@ -13,35 +13,15 @@ import {
 import "bootstrap/dist/css/bootstrap.min.css";
 import "./App.css";
 
-const API_URL = import.meta.env.VITE_API_URL;
-const DEFAULT_WINDOW_MS = 60 * 60 * 1000; // 1 hora
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:10000";
+const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
 const MAX_CHART_POINTS = 700;
 
 const METRICS = [
-  {
-    key: "temperatura",
-    title: "Temperatura",
-    short: "Temp",
-    unit: "°C",
-  },
-  {
-    key: "humedad",
-    title: "Humedad",
-    short: "Humedad",
-    unit: "%",
-  },
-  {
-    key: "radiacion_uv",
-    title: "Radiación UV",
-    short: "Rad UV",
-    unit: "mW/cm²",
-  },
-  {
-    key: "sonido",
-    title: "Sonido",
-    short: "Sonido",
-    unit: "dB",
-  },
+  { key: "temperatura", title: "Temperatura", short: "Temp", unit: "°C" },
+  { key: "humedad", title: "Humedad", short: "Humedad", unit: "%" },
+  { key: "radiacion_uv", title: "Radiación UV", short: "Rad UV", unit: "mW/cm²" },
+  { key: "sonido", title: "Sonido", short: "Sonido", unit: "dB" },
 ];
 
 const DEVICE_LABELS = {
@@ -66,6 +46,12 @@ const DEVICE_COLOR_PALETTE = [
 
 const ALERT_TRIGGER_LEVELS = new Set(["elevado", "critico"]);
 
+function toNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function getDeviceLabel(deviceOrId) {
   const deviceId =
     typeof deviceOrId === "string" ? deviceOrId : deviceOrId?.deviceId;
@@ -79,10 +65,6 @@ function getAvailableMetrics(device) {
   return METRICS.filter((metric) => vars.includes(metric.key)).map(
     (metric) => metric.key
   );
-}
-
-function getMetricMeta(metricKey) {
-  return METRICS.find((metric) => metric.key === metricKey) || METRICS[0];
 }
 
 function getMetricDigits() {
@@ -156,11 +138,9 @@ function reducePoints(rows, maxPoints = MAX_CHART_POINTS) {
 
 function createInitialSelections(devices) {
   const next = {};
-
   devices.forEach((device, index) => {
     next[device.deviceId] = index < 2 || devices.length <= 2;
   });
-
   return next;
 }
 
@@ -188,6 +168,91 @@ function getAlertHeaderClass(level) {
 
 function getAlertButtonCloseClass(level) {
   return level === "critico" ? "btn-close btn-close-white" : "btn-close";
+}
+
+function evaluateTemperatureFrontend(value, deviceId) {
+  const n = toNumber(value);
+  const deviceLabel = getDeviceLabel(deviceId);
+
+  if (n === null) return null;
+
+  if (n > 32) {
+    return {
+      metric: "temperatura",
+      metricLabel: "Temperatura",
+      value: n,
+      unit: "°C",
+      level: "critico",
+      label: "Crítico",
+      message: `Temperatura crítica en ${deviceLabel}: ${n} °C`,
+    };
+  }
+
+  if (n > 27 && n <= 32) {
+    return {
+      metric: "temperatura",
+      metricLabel: "Temperatura",
+      value: n,
+      unit: "°C",
+      level: "elevado",
+      label: "Elevado",
+      message: `Temperatura elevada en ${deviceLabel}: ${n} °C`,
+    };
+  }
+
+  return null;
+}
+
+function evaluateHumidityFrontend(value, deviceId) {
+  const n = toNumber(value);
+  const deviceLabel = getDeviceLabel(deviceId);
+
+  if (n === null) return null;
+
+  if (n > 70) {
+    return {
+      metric: "humedad",
+      metricLabel: "Humedad",
+      value: n,
+      unit: "%",
+      level: "critico",
+      label: "Crítico",
+      message: `Humedad crítica en ${deviceLabel}: ${n} %`,
+    };
+  }
+
+  return null;
+}
+
+function getAlertCandidateFromStatus(status) {
+  if (!status || !ALERT_TRIGGER_LEVELS.has(status.level)) return null;
+
+  return {
+    metric: status.metric,
+    metricLabel: getMetricDisplayName(status.metric),
+    value: status.value,
+    unit: status.unit,
+    level: status.level,
+    label: status.label,
+    message: status.message,
+  };
+}
+
+function getDeviceAlertCandidates(deviceEntry) {
+  const backendTemp = getAlertCandidateFromStatus(deviceEntry?.alertStatus?.temperatura);
+  const backendHum = getAlertCandidateFromStatus(deviceEntry?.alertStatus?.humedad);
+
+  const fallbackTemp = evaluateTemperatureFrontend(
+    deviceEntry?.latest?.temperatura,
+    deviceEntry?.deviceId
+  );
+
+  const fallbackHum = evaluateHumidityFrontend(
+    deviceEntry?.latest?.humedad,
+    deviceEntry?.deviceId
+  );
+
+  return [backendTemp || fallbackTemp, backendHum || fallbackHum].filter(Boolean);
 }
 
 function RealtimeRow({ device, latest }) {
@@ -415,12 +480,9 @@ export default function App() {
     if (!Array.isArray(latestDevices) || latestDevices.length === 0) return;
 
     latestDevices.forEach((deviceEntry) => {
-      const statusList = [
-        deviceEntry?.alertStatus?.temperatura,
-        deviceEntry?.alertStatus?.humedad,
-      ].filter(Boolean);
+      const candidates = getDeviceAlertCandidates(deviceEntry);
 
-      statusList.forEach((status) => {
+      candidates.forEach((status) => {
         const prevKey = `${deviceEntry.deviceId}:${status.metric}`;
         const prevLevel = previousAlertLevelsRef.current[prevKey] || "unknown";
         const currentLevel = status.level || "unknown";
@@ -430,7 +492,7 @@ export default function App() {
             deviceId: deviceEntry.deviceId,
             deviceLabel: getDeviceLabel(deviceEntry.deviceId),
             metric: status.metric,
-            metricLabel: getMetricDisplayName(status.metric),
+            metricLabel: status.metricLabel,
             value: status.value,
             unit: status.unit,
             level: currentLevel,
@@ -442,6 +504,17 @@ export default function App() {
 
         previousAlertLevelsRef.current[prevKey] = currentLevel;
       });
+
+      const hasTemp = candidates.some((item) => item.metric === "temperatura");
+      const hasHum = candidates.some((item) => item.metric === "humedad");
+
+      if (!hasTemp) {
+        previousAlertLevelsRef.current[`${deviceEntry.deviceId}:temperatura`] = "ideal";
+      }
+
+      if (!hasHum) {
+        previousAlertLevelsRef.current[`${deviceEntry.deviceId}:humedad`] = "ideal";
+      }
     });
   }, [latestDevices, enqueueAlert]);
 
