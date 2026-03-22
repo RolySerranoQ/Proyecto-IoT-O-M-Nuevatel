@@ -524,27 +524,23 @@ export default function App() {
     try {
       setError("");
 
-      const [configRes, latestRes, listRes] = await Promise.all([
+      const [configRes, latestRes] = await Promise.all([
         fetch(`${API_URL}/api/devices/config`),
         fetch(`${API_URL}/api/devices/latest`),
-        fetch(`${API_URL}/api/measurements?limit=5000&sort=asc`),
       ]);
 
-      if (!configRes.ok || !latestRes.ok || !listRes.ok) {
+      if (!configRes.ok || !latestRes.ok) {
         throw new Error("No se pudo cargar la información del backend");
       }
 
       const configData = await configRes.json();
       const latestData = await latestRes.json();
-      const listData = await listRes.json();
 
       const safeDevices = Array.isArray(configData) ? configData : [];
       const safeLatest = Array.isArray(latestData) ? latestData : [];
-      const safeItems = Array.isArray(listData) ? listData : [];
 
       setDevices(safeDevices);
       setLatestDevices(safeLatest);
-      setItems(safeItems);
       setLastUpdated(new Date());
 
       processAlertsFromLatest(safeLatest);
@@ -642,6 +638,66 @@ export default function App() {
       .map((device) => device.deviceId)
       .filter((deviceId) => selectedDevices[deviceId]);
   }, [devices, selectedDevices]);
+
+  const fetchMeasurements = useCallback(async () => {
+    if (customRangeError) {
+      setItems([]);
+      return;
+    }
+
+    if (devices.length > 0 && selectedDeviceIds.length === 0) {
+      setItems([]);
+      return;
+    }
+
+    try {
+      setError("");
+
+      const params = new URLSearchParams();
+      params.set("sort", "asc");
+      params.set("limit", customRange.from || customRange.to ? "50000" : "5000");
+
+      if (selectedDeviceIds.length) {
+        params.set("deviceId", selectedDeviceIds.join(","));
+      }
+
+      if (customRange.from) {
+        params.set("from", new Date(customRange.from).toISOString());
+      }
+
+      if (customRange.to) {
+        params.set("to", new Date(customRange.to).toISOString());
+      }
+
+      const res = await fetch(`${API_URL}/api/measurements?${params.toString()}`);
+
+      if (!res.ok) {
+        throw new Error("No se pudo cargar mediciones");
+      }
+
+      const data = await res.json();
+      const safeItems = Array.isArray(data) ? data : [];
+
+      setItems(safeItems);
+      setLastUpdated(new Date());
+    } catch (err) {
+      setError(err.message || "Error al cargar mediciones");
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    devices.length,
+    selectedDeviceIds,
+    customRange.from,
+    customRange.to,
+    customRangeError,
+  ]);
+
+  useEffect(() => {
+    fetchMeasurements();
+    const id = setInterval(fetchMeasurements, 10000);
+    return () => clearInterval(id);
+  }, [fetchMeasurements]);
 
   const filteredItems = useMemo(() => {
     if (!Array.isArray(items) || items.length === 0) return [];
