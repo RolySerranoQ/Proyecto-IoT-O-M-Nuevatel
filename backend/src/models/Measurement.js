@@ -2,51 +2,27 @@ const mongoose = require("mongoose");
 
 const measurementSchema = new mongoose.Schema(
   {
-    deviceId: { type: String, required: true },
-    deviceProfile: {
-      type: String,
-      enum: ["full", "basic"],
-      required: true
-    },
+    deviceId: { type: String, required: true, trim: true },
+    receivedAt: { type: Date, required: true, default: Date.now },
 
-    applicationId: { type: String, default: "" },
-    devEui: { type: String, default: "" },
-    fCnt: { type: Number, default: null },
-    receivedAt: { type: Date, default: Date.now },
+    temperatura: Number,
+    humedad: Number,
 
-    temperatura: { type: Number, default: null },
-    humedad: { type: Number, default: null },
-    radiacion_uv: { type: Number, default: null },
-    sonido: { type: Number, default: null },
-    voltaje: { type: Number, default: null },
-
-    rawMessage: { type: String, default: "" },
-    frmPayload: { type: String, default: "" },
-    rawHex: { type: String, default: "" },
-
-    gatewayId: { type: String, default: "" },
-    rssi: { type: Number, default: null },
-    snr: { type: Number, default: null },
-    frequency: { type: Number, default: null },
-    spreadingFactor: { type: Number, default: null }
+    // Solo para Disp. 1
+    radiacion_uv: Number,
+    sonido: Number,
+    voltaje: Number
   },
   {
-    timestamps: true,
-    versionKey: false
+    versionKey: false,
+    timestamps: false
   }
 );
 
+// Para consultas por dispositivo y fecha
 measurementSchema.index({ deviceId: 1, receivedAt: -1 });
-measurementSchema.index({ receivedAt: -1 });
 
-measurementSchema.index(
-  { applicationId: 1, deviceId: 1, fCnt: 1 },
-  {
-    unique: true,
-    partialFilterExpression: {
-      fCnt: { $type: "number" }
-    }
-  }
-);
+// Para evitar duplicados exactos del mismo dispositivo en la misma fecha/hora
+measurementSchema.index({ deviceId: 1, receivedAt: 1 }, { unique: true });
 
 module.exports = mongoose.model("Measurement", measurementSchema);

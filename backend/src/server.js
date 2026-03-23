@@ -23,35 +23,32 @@ if (missingEnv.length > 0) {
 /* =========================
    CATÁLOGO DE DISPOSITIVOS
 ========================= */
-
+/*
+  Ajusta las claves si en TTN tus device_id reales son otros.
+*/
 const DEVICE_CATALOG = {
   "dispositivo-1n": {
-    label: "Dispositivo 1",
-    profile: "full",
-    variables: ["temperatura", "humedad", "radiacion_uv", "sonido", "voltaje"]
-  },
-  "dispositivo-2": {
-    label: "Dispositivo 2",
+    label: "Disp. 1",
     profile: "full",
     variables: ["temperatura", "humedad", "radiacion_uv", "sonido", "voltaje"]
   },
   "dispositivo-3": {
-    label: "Dispositivo 3",
+    label: "V-One",
     profile: "basic",
     variables: ["temperatura", "humedad"]
   },
   "dispositivo-4": {
-    label: "Dispositivo 4",
+    label: "Datacon",
     profile: "basic",
     variables: ["temperatura", "humedad"]
   },
   "dispositivo-5": {
-    label: "Dispositivo 5",
+    label: "RNC",
     profile: "basic",
     variables: ["temperatura", "humedad"]
   },
   "dispositivo-6": {
-    label: "Dispositivo 6",
+    label: "Casita IT",
     profile: "basic",
     variables: ["temperatura", "humedad"]
   }
@@ -85,11 +82,6 @@ const SEVERITY_RANK = {
   critico: 3
 };
 
-/**
- * Cache en memoria para detectar cambios de estado.
- * Más adelante aquí es donde debes enganchar WhatsApp
- * para enviar solo cuando cambie el nivel.
- */
 const alertStateCache = new Map();
 
 /* =========================
@@ -146,15 +138,6 @@ function decodeFrmPayloadUtf8(frmPayload) {
   }
 }
 
-function decodeFrmPayloadHex(frmPayload) {
-  try {
-    if (!frmPayload) return "";
-    return Buffer.from(frmPayload, "base64").toString("hex");
-  } catch {
-    return "";
-  }
-}
-
 function parseRawMessage(raw) {
   const text = typeof raw === "string" ? raw.trim() : "";
 
@@ -180,6 +163,12 @@ function pickMetric(decoded, parsedRaw, decodedKeys, rawKey) {
   const decodedValue = getDecodedValue(decoded, decodedKeys);
   if (decodedValue !== null) return decodedValue;
   return parsedRaw[rawKey] ?? null;
+}
+
+function assignIfPresent(target, key, value) {
+  if (value !== null && value !== undefined) {
+    target[key] = value;
+  }
 }
 
 /* =========================
@@ -372,12 +361,6 @@ function trackAlertTransitions(doc, alertBundle) {
         console.warn(
           `[ALERTA] ${doc.deviceId} | ${status.metric} | ${previousLevel} -> ${currentLevel} | valor=${status.value}${status.unit}`
         );
-
-        /**
-         * AQUÍ va tu futura integración con WhatsApp
-         * Solo se ejecutará cuando cambie el estado,
-         * no en cada minuto repetido.
-         */
       } else if (previousLevel === "elevado" || previousLevel === "critico") {
         console.log(
           `[ALERTA RESUELTA] ${doc.deviceId} | ${status.metric} | ${previousLevel} -> ${currentLevel}`
@@ -395,24 +378,19 @@ function buildMeasurementDoc(data) {
   const deviceId = normalizeDeviceId(data?.end_device_ids?.device_id);
   const config = DEVICE_CATALOG[deviceId];
 
+  // Si no está en catálogo, se ignora.
+  // Aquí cae automáticamente "dispositivo-2"
   if (!config) {
     return null;
   }
 
-  const applicationId =
-    data?.end_device_ids?.application_ids?.application_id?.trim() || "";
-
-  const devEui = data?.end_device_ids?.dev_eui?.trim() || "";
   const uplink = data?.uplink_message || {};
   const decoded =
     uplink.decoded_payload && typeof uplink.decoded_payload === "object"
       ? uplink.decoded_payload
       : {};
 
-  const rx0 = Array.isArray(uplink.rx_metadata) ? uplink.rx_metadata[0] || {} : {};
-  const lora = uplink?.settings?.data_rate?.lora || {};
   const frmPayload = uplink.frm_payload || "";
-  const rawHex = decodeFrmPayloadHex(frmPayload);
 
   const rawMessage =
     firstDefined(decoded, ["raw_message", "rawMessage"]) ||
@@ -437,70 +415,53 @@ function buildMeasurementDoc(data) {
     "humedad"
   );
 
-  const radiacion_uv =
-    config.profile === "full"
-      ? pickMetric(
-          decoded,
-          parsedRaw,
-          ["radiacion_uv", "radiacionUV", "radiacionUv", "uv", "uv_index"],
-          "radiacion_uv"
-        )
-      : null;
-
-  const sonido =
-    config.profile === "full"
-      ? pickMetric(decoded, parsedRaw, ["sonido", "sound", "ruido"], "sonido")
-      : null;
-
-  const voltaje =
-    config.profile === "full"
-      ? pickMetric(
-          decoded,
-          parsedRaw,
-          ["voltaje", "voltage", "battery", "bateria"],
-          "voltaje"
-        )
-      : null;
-
-  return {
+  const doc = {
     deviceId,
-    deviceProfile: config.profile,
-    applicationId,
-    devEui,
-    fCnt: toNumber(uplink.f_cnt),
-    receivedAt: isValidDate(receivedAt) ? receivedAt : new Date(),
-
-    temperatura,
-    humedad,
-    radiacion_uv,
-    sonido,
-    voltaje,
-
-    rawMessage,
-    frmPayload,
-    rawHex,
-
-    gatewayId: rx0?.gateway_ids?.gateway_id || "",
-    rssi: toNumber(rx0?.rssi),
-    snr: toNumber(rx0?.snr),
-    frequency: toNumber(uplink?.settings?.frequency),
-    spreadingFactor: toNumber(lora?.spreading_factor)
+    receivedAt: isValidDate(receivedAt) ? receivedAt : new Date()
   };
+
+  assignIfPresent(doc, "temperatura", temperatura);
+  assignIfPresent(doc, "humedad", humedad);
+
+  if (config.profile === "full") {
+    const radiacion_uv = pickMetric(
+      decoded,
+      parsedRaw,
+      ["radiacion_uv", "radiacionUV", "radiacionUv", "uv", "uv_index"],
+      "radiacion_uv"
+    );
+
+    const sonido = pickMetric(
+      decoded,
+      parsedRaw,
+      ["sonido", "sound", "ruido"],
+      "sonido"
+    );
+
+    const voltaje = pickMetric(
+      decoded,
+      parsedRaw,
+      ["voltaje", "voltage", "battery", "bateria"],
+      "voltaje"
+    );
+
+    assignIfPresent(doc, "radiacion_uv", radiacion_uv);
+    assignIfPresent(doc, "sonido", sonido);
+    assignIfPresent(doc, "voltaje", voltaje);
+  }
+
+  return doc;
 }
 
 async function persistMeasurement(doc) {
-  if (doc.fCnt === null || doc.fCnt === undefined) {
-    await Measurement.create(doc);
-    return;
-  }
-
   await Measurement.findOneAndUpdate(
     {
-      applicationId: doc.applicationId,
       deviceId: doc.deviceId,
-      fCnt: doc.fCnt
+      receivedAt: doc.receivedAt
     },
-    { $set: doc },
+    {
+      $setOnInsert: doc
+    },
     {
       upsert: true,
       new: true,
@@ -522,8 +483,7 @@ async function getLatestDocsByDevice() {
     },
     {
       $sort: {
-        receivedAt: -1,
-        createdAt: -1
+        receivedAt: -1
       }
     },
     {
@@ -652,8 +612,7 @@ app.get("/api/measurements/latest", async (req, res) => {
     }
 
     const item = await Measurement.findOne(filter).sort({
-      receivedAt: -1,
-      createdAt: -1
+      receivedAt: -1
     });
 
     if (!item) {
@@ -723,7 +682,7 @@ app.get("/api/measurements", async (req, res) => {
     }
 
     const items = await Measurement.find(filter)
-      .sort({ receivedAt: sort, createdAt: sort })
+      .sort({ receivedAt: sort })
       .limit(limit);
 
     res.json(items);
@@ -740,7 +699,7 @@ app.get("/api/measurements/stats", async (req, res) => {
 
     const latest = await Measurement.findOne({
       deviceId: { $in: DEVICE_IDS }
-    }).sort({ receivedAt: -1, createdAt: -1 });
+    }).sort({ receivedAt: -1 });
 
     const byDeviceAgg = await Measurement.aggregate([
       {
@@ -860,11 +819,11 @@ function startMqtt() {
       trackAlertTransitions(doc, alertBundle);
 
       console.log(
-        `[MONGO] guardado device=${doc.deviceId} fCnt=${doc.fCnt} temp=${doc.temperatura} hum=${doc.humedad}`
+        `[MONGO] guardado device=${doc.deviceId} temp=${doc.temperatura ?? "N/D"} hum=${doc.humedad ?? "N/D"}`
       );
     } catch (error) {
       if (error?.code === 11000) {
-        console.warn("[MONGO] duplicado ignorado");
+        console.warn("[MONGO] duplicado exacto ignorado");
         return;
       }
 
