@@ -4,6 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const mqtt = require("mqtt");
+const twilio = require("twilio");
 const Measurement = require("./models/Measurement");
 
 const requiredEnv = [
@@ -85,11 +86,206 @@ const SEVERITY_RANK = {
 const alertStateCache = new Map();
 
 /* =========================
+   WHATSAPP / TWILIO
+========================= */
+
+const whatsappClient =
+  process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
+    ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
+    : null;
+
+const whatsappCooldownCache = new Map();
+
+function isWhatsAppEnabled() {
+  return Boolean(
+    whatsappClient &&
+    process.env.TWILIO_ACCOUNT_SID &&
+    process.env.TWILIO_AUTH_TOKEN &&
+    process.env.TWILIO_WHATSAPP_FROM
+  );
+}
+
+function normalizeWhatsAppNumber(value) {
+  if (!value || typeof value !== "string") return "";
+  const clean = value.trim();
+  if (!clean) return "";
+  return clean.startsWith("whatsapp:") ? clean : `whatsapp:${clean}`;
+}
+
+function getWhatsAppFrom() {
+  return normalizeWhatsAppNumber(process.env.TWILIO_WHATSAPP_FROM);
+}
+
+function getWhatsAppAlertRecipients() {
+  return (process.env.WHATSAPP_ALERT_TO || "")
+    .split(",")
+    .map((v) => normalizeWhatsAppNumber(v))
+    .filter(Boolean);
+}
+
+function getWhatsAppCooldownMs() {
+  const value = Number(process.env.WHATSAPP_ALERT_COOLDOWN_MS || "900000");
+  return Number.isFinite(value) && value >= 0 ? value : 900000;
+}
+
+function isWhatsAppCooldownActive(key) {
+  const now = Date.now();
+  const expiresAt = whatsappCooldownCache.get(key);
+
+  if (!expiresAt) return false;
+  if (expiresAt <= now) {
+    whatsappCooldownCache.delete(key);
+    return false;
+  }
+
+  return true;
+}
+
+function activateWhatsAppCooldown(key, ms = getWhatsAppCooldownMs()) {
+  whatsappCooldownCache.set(key, Date.now() + ms);
+}
+
+function formatWhatsAppDate(value) {
+  const d = new Date(value || Date.now());
+
+  if (Number.isNaN(d.getTime())) {
+    return new Date().toLocaleString("es-BO", {
+      timeZone: process.env.APP_TIMEZONE || "America/La_Paz",
+      hour12: false
+    });
+  }
+
+  return d.toLocaleString("es-BO", {
+    timeZone: process.env.APP_TIMEZONE || "America/La_Paz",
+    hour12: false
+  });
+}
+
+function buildWhatsAppAlertMessage({ doc, status, previousLevel, isResolved = false }) {
+  const deviceLabel = DEVICE_CATALOG[doc.deviceId]?.label || doc.deviceId;
+  const value = status.value ?? "N/D";
+  const unit = status.unit || "";
+  const when = formatWhatsAppDate(doc.receivedAt);
+
+  if (isResolved) {
+    return [
+      "✅ ALERTA RESUELTA",
+      `Dispositivo: ${deviceLabel} (${doc.deviceId})`,
+      `Variable: ${status.metric}`,
+      `Estado anterior: ${previousLevel}`,
+      `Estado actual: ${status.level}`,
+      `Valor actual: ${value} ${unit}`.trim(),
+      `Fecha: ${when}`
+    ].join("\n");
+  }
+
+  return [
+    "🚨 ALERTA",
+    `Dispositivo: ${deviceLabel} (${doc.deviceId})`,
+    `Variable: ${status.metric}`,
+    `Nivel: ${status.label}`,
+    `Transición: ${previousLevel} -> ${status.level}`,
+    `Valor: ${value} ${unit}`.trim(),
+    `Fecha: ${when}`
+  ].join("\n");
+}
+
+async function sendWhatsAppMessage({ to, body, contentSid, contentVariables }) {
+  if (!isWhatsAppEnabled()) {
+    throw new Error(
+      "Twilio WhatsApp no está configurado. Revisa TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN y TWILIO_WHATSAPP_FROM."
+    );
+  }
+
+  const payload = {
+    from: getWhatsAppFrom(),
+    to: normalizeWhatsAppNumber(to)
+  };
+
+  if (!payload.to) {
+    throw new Error("Número destino inválido para WhatsApp.");
+  }
+
+  if (process.env.TWILIO_WHATSAPP_STATUS_CALLBACK_URL) {
+    payload.statusCallback = process.env.TWILIO_WHATSAPP_STATUS_CALLBACK_URL;
+  }
+
+  if (contentSid) {
+    payload.contentSid = contentSid;
+    if (contentVariables) {
+      payload.contentVariables =
+        typeof contentVariables === "string"
+          ? contentVariables
+          : JSON.stringify(contentVariables);
+    }
+  } else if (body) {
+    payload.body = body;
+  } else {
+    throw new Error("Debes enviar 'body' o 'contentSid'.");
+  }
+
+  return whatsappClient.messages.create(payload);
+}
+
+async function notifyWhatsAppAlertTransition({ doc, status, previousLevel, isResolved = false }) {
+  const recipients = getWhatsAppAlertRecipients();
+
+  if (!recipients.length) {
+    return;
+  }
+
+  if (!isWhatsAppEnabled()) {
+    console.warn("[WHATSAPP] No configurado. Se omite el envío.");
+    return;
+  }
+
+  const cooldownKey = isResolved
+    ? `${doc.deviceId}:${status.metric}:resolved`
+    : `${doc.deviceId}:${status.metric}:${status.level}`;
+
+  if (isWhatsAppCooldownActive(cooldownKey)) {
+    console.log(`[WHATSAPP] alerta omitida por cooldown: ${cooldownKey}`);
+    return;
+  }
+
+  const body = buildWhatsAppAlertMessage({
+    doc,
+    status,
+    previousLevel,
+    isResolved
+  });
+
+  let sentOk = false;
+
+  for (const to of recipients) {
+    try {
+      const msg = await sendWhatsAppMessage({ to, body });
+      sentOk = true;
+
+      console.log(
+        `[WHATSAPP] enviado sid=${msg.sid} to=${msg.to} status=${msg.status}`
+      );
+    } catch (error) {
+      console.error(
+        `[WHATSAPP] error enviando a ${to}:`,
+        error?.message || error
+      );
+    }
+  }
+
+  if (sentOk) {
+    activateWhatsAppCooldown(cooldownKey);
+  }
+}
+
+
+/* =========================
    APP
 ========================= */
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 const allowedOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(",").map((v) => v.trim())
@@ -346,10 +542,10 @@ function buildEmptyAlertBundle() {
   };
 }
 
-function trackAlertTransitions(doc, alertBundle) {
+async function trackAlertTransitions(doc, alertBundle) {
   const candidates = [alertBundle.temperatura, alertBundle.humedad];
 
-  candidates.forEach((status) => {
+  for (const status of candidates) {
     const key = `${doc.deviceId}:${status.metric}`;
     const previousLevel = alertStateCache.get(key) || "unknown";
     const currentLevel = status.level;
@@ -361,13 +557,27 @@ function trackAlertTransitions(doc, alertBundle) {
         console.warn(
           `[ALERTA] ${doc.deviceId} | ${status.metric} | ${previousLevel} -> ${currentLevel} | valor=${status.value}${status.unit}`
         );
+
+        await notifyWhatsAppAlertTransition({
+          doc,
+          status,
+          previousLevel,
+          isResolved: false
+        });
       } else if (previousLevel === "elevado" || previousLevel === "critico") {
         console.log(
           `[ALERTA RESUELTA] ${doc.deviceId} | ${status.metric} | ${previousLevel} -> ${currentLevel}`
         );
+
+        await notifyWhatsAppAlertTransition({
+          doc,
+          status,
+          previousLevel,
+          isResolved: true
+        });
       }
     }
-  });
+  }
 }
 
 /* =========================
@@ -601,6 +811,73 @@ app.get("/api/alerts/active", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+////////////////////////////////////////////////////
+app.post("/api/whatsapp/send", async (req, res) => {
+  try {
+    const { to, body, contentSid, contentVariables } = req.body || {};
+
+    if (!to) {
+      return res.status(400).json({
+        ok: false,
+        error: "El campo 'to' es obligatorio."
+      });
+    }
+
+    if (!body && !contentSid) {
+      return res.status(400).json({
+        ok: false,
+        error: "Debes enviar 'body' para texto libre o 'contentSid' para plantilla."
+      });
+    }
+
+    const msg = await sendWhatsAppMessage({
+      to,
+      body,
+      contentSid,
+      contentVariables
+    });
+
+    res.status(201).json({
+      ok: true,
+      sid: msg.sid,
+      status: msg.status,
+      from: msg.from,
+      to: msg.to,
+      body: msg.body ?? null
+    });
+  } catch (error) {
+    const status = Number(error?.status || error?.statusCode || 500);
+
+    res.status(status >= 400 ? status : 500).json({
+      ok: false,
+      error: error?.message || "Error enviando WhatsApp",
+      code: error?.code || null,
+      moreInfo: error?.moreInfo || null
+    });
+  }
+});
+
+app.post("/api/whatsapp/status", (req, res) => {
+  const { MessageSid, MessageStatus, ErrorCode, To, From, EventType } = req.body || {};
+
+  console.log(
+    `[TWILIO STATUS] sid=${MessageSid} status=${MessageStatus} event=${EventType || "N/A"} from=${From || "N/A"} to=${To || "N/A"} error=${ErrorCode || "none"}`
+  );
+
+  res.sendStatus(200);
+});
+
+app.post("/api/whatsapp/inbound", (req, res) => {
+  const { From, Body, ProfileName } = req.body || {};
+
+  console.log(
+    `[TWILIO INBOUND] from=${From || "N/A"} profile=${ProfileName || "N/A"} body=${Body || ""}`
+  );
+
+  res.sendStatus(200);
+});
+
+////////////////////////////////////////////////////////////7
 
 app.get("/api/measurements/latest", async (req, res) => {
   try {
@@ -816,7 +1093,7 @@ function startMqtt() {
       await persistMeasurement(doc);
 
       const alertBundle = buildAlertsFromMeasurement(doc);
-      trackAlertTransitions(doc, alertBundle);
+      await trackAlertTransitions(doc, alertBundle);
 
       console.log(
         `[MONGO] guardado device=${doc.deviceId} temp=${doc.temperatura ?? "N/D"} hum=${doc.humedad ?? "N/D"}`

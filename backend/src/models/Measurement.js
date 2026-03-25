@@ -25,4 +25,4 @@ measurementSchema.index({ deviceId: 1, receivedAt: -1 });
 // Para evitar duplicados exactos del mismo dispositivo en la misma fecha/hora
 measurementSchema.index({ deviceId: 1, receivedAt: 1 }, { unique: true });
 
-module.exports = mongoose.model("Measurement", measurementSchema);
+module.exports = mongoose.model("Measurement", measurementSchema);  //hola
