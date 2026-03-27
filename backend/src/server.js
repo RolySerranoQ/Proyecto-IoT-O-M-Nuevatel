@@ -4,6 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const mqtt = require("mqtt");
+const twilio = require("twilio");
 const Measurement = require("./models/Measurement");
 
 const requiredEnv = [
@@ -85,16 +86,41 @@ const SEVERITY_RANK = {
 const alertStateCache = new Map();
 
 /* =========================
-   WEBHOOK -> TWILIO FUNCTION
+   WHATSAPP / TWILIO
 ========================= */
+
+const whatsappClient =
+  process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
+    ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
+    : null;
 
 const whatsappCooldownCache = new Map();
 
-function isWebhookEnabled() {
+function isWhatsAppEnabled() {
   return Boolean(
-    process.env.TWILIO_FUNCTION_URL &&
-    process.env.TWILIO_FUNCTION_TOKEN
+    whatsappClient &&
+    process.env.TWILIO_ACCOUNT_SID &&
+    process.env.TWILIO_AUTH_TOKEN &&
+    process.env.TWILIO_WHATSAPP_FROM
   );
+}
+
+function normalizeWhatsAppNumber(value) {
+  if (!value || typeof value !== "string") return "";
+  const clean = value.trim();
+  if (!clean) return "";
+  return clean.startsWith("whatsapp:") ? clean : `whatsapp:${clean}`;
+}
+
+function getWhatsAppFrom() {
+  return normalizeWhatsAppNumber(process.env.TWILIO_WHATSAPP_FROM);
+}
+
+function getWhatsAppAlertRecipients() {
+  return (process.env.WHATSAPP_ALERT_TO || "")
+    .split(",")
+    .map((v) => normalizeWhatsAppNumber(v))
+    .filter(Boolean);
 }
 
 function getWhatsAppCooldownMs() {
@@ -164,55 +190,52 @@ function buildWhatsAppAlertMessage({ doc, status, previousLevel, isResolved = fa
   ].join("\n");
 }
 
-async function sendWebhookToTwilioFunction(payload) {
-  if (!isWebhookEnabled()) {
+async function sendWhatsAppMessage({ to, body, contentSid, contentVariables }) {
+  if (!isWhatsAppEnabled()) {
     throw new Error(
-      "Twilio Function webhook no está configurado. Revisa TWILIO_FUNCTION_URL y TWILIO_FUNCTION_TOKEN."
+      "Twilio WhatsApp no está configurado. Revisa TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN y TWILIO_WHATSAPP_FROM."
     );
   }
 
-  const body = new URLSearchParams();
+  const payload = {
+    from: getWhatsAppFrom(),
+    to: normalizeWhatsAppNumber(to)
+  };
 
-  Object.entries({
-    ...payload,
-    token: process.env.TWILIO_FUNCTION_TOKEN
-  }).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) {
-      body.append(key, String(value));
+  if (!payload.to) {
+    throw new Error("Número destino inválido para WhatsApp.");
+  }
+
+  if (process.env.TWILIO_WHATSAPP_STATUS_CALLBACK_URL) {
+    payload.statusCallback = process.env.TWILIO_WHATSAPP_STATUS_CALLBACK_URL;
+  }
+
+  if (contentSid) {
+    payload.contentSid = contentSid;
+    if (contentVariables) {
+      payload.contentVariables =
+        typeof contentVariables === "string"
+          ? contentVariables
+          : JSON.stringify(contentVariables);
     }
-  });
-
-  const response = await fetch(process.env.TWILIO_FUNCTION_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    body: body.toString()
-  });
-
-  const text = await response.text();
-
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = text;
+  } else if (body) {
+    payload.body = body;
+  } else {
+    throw new Error("Debes enviar 'body' o 'contentSid'.");
   }
 
-  if (!response.ok) {
-    throw new Error(
-      `Twilio Function respondió ${response.status}: ${
-        typeof parsed === "string" ? parsed : JSON.stringify(parsed)
-      }`
-    );
-  }
-
-  return parsed;
+  return whatsappClient.messages.create(payload);
 }
 
 async function notifyWhatsAppAlertTransition({ doc, status, previousLevel, isResolved = false }) {
-  if (!isWebhookEnabled()) {
-    console.warn("[WEBHOOK] No configurado. Se omite el envío.");
+  const recipients = getWhatsAppAlertRecipients();
+
+  if (!recipients.length) {
+    return;
+  }
+
+  if (!isWhatsAppEnabled()) {
+    console.warn("[WHATSAPP] No configurado. Se omite el envío.");
     return;
   }
 
@@ -221,37 +244,40 @@ async function notifyWhatsAppAlertTransition({ doc, status, previousLevel, isRes
     : `${doc.deviceId}:${status.metric}:${status.level}`;
 
   if (isWhatsAppCooldownActive(cooldownKey)) {
-    console.log(`[WEBHOOK] alerta omitida por cooldown: ${cooldownKey}`);
+    console.log(`[WHATSAPP] alerta omitida por cooldown: ${cooldownKey}`);
     return;
   }
 
-  const mensaje = buildWhatsAppAlertMessage({
+  const body = buildWhatsAppAlertMessage({
     doc,
     status,
     previousLevel,
     isResolved
   });
 
-  try {
-    const result = await sendWebhookToTwilioFunction({
-      device: doc.deviceId,
-      device_label: DEVICE_CATALOG[doc.deviceId]?.label || doc.deviceId,
-      variable: status.metric,
-      level: status.level,
-      previous_level: previousLevel,
-      value: String(status.value ?? ""),
-      unit: status.unit || "",
-      datetime: formatWhatsAppDate(doc.receivedAt),
-      resolved: isResolved ? "true" : "false",
-      mensaje
-    });
+  let sentOk = false;
 
-    console.log("[WEBHOOK] enviado correctamente:", result);
+  for (const to of recipients) {
+    try {
+      const msg = await sendWhatsAppMessage({ to, body });
+      sentOk = true;
+
+      console.log(
+        `[WHATSAPP] enviado sid=${msg.sid} to=${msg.to} status=${msg.status}`
+      );
+    } catch (error) {
+      console.error(
+        `[WHATSAPP] error enviando a ${to}:`,
+        error?.message || error
+      );
+    }
+  }
+
+  if (sentOk) {
     activateWhatsAppCooldown(cooldownKey);
-  } catch (error) {
-    console.error("[WEBHOOK] error enviando a Twilio Function:", error.message);
   }
 }
+
 
 /* =========================
    APP
@@ -785,34 +811,48 @@ app.get("/api/alerts/active", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 ////////////////////////////////////////////////////
 app.post("/api/whatsapp/send", async (req, res) => {
   try {
-    const { to, body } = req.body || {};
+    const { to, body, contentSid, contentVariables } = req.body || {};
 
-    if (!body) {
+    if (!to) {
       return res.status(400).json({
         ok: false,
-        error: "En modo webhook el campo 'body' es obligatorio."
+        error: "El campo 'to' es obligatorio."
       });
     }
 
-    const result = await sendWebhookToTwilioFunction({
-      manual: "true",
-      to: to || "",
-      mensaje: body
+    if (!body && !contentSid) {
+      return res.status(400).json({
+        ok: false,
+        error: "Debes enviar 'body' para texto libre o 'contentSid' para plantilla."
+      });
+    }
+
+    const msg = await sendWhatsAppMessage({
+      to,
+      body,
+      contentSid,
+      contentVariables
     });
 
     res.status(201).json({
       ok: true,
-      mode: "webhook",
-      result
+      sid: msg.sid,
+      status: msg.status,
+      from: msg.from,
+      to: msg.to,
+      body: msg.body ?? null
     });
   } catch (error) {
-    res.status(500).json({
+    const status = Number(error?.status || error?.statusCode || 500);
+
+    res.status(status >= 400 ? status : 500).json({
       ok: false,
-      error: error?.message || "Error enviando webhook a Twilio Function"
+      error: error?.message || "Error enviando WhatsApp",
+      code: error?.code || null,
+      moreInfo: error?.moreInfo || null
     });
   }
 });
@@ -1093,12 +1133,6 @@ async function startServer() {
   console.log("Iniciando backend...");
   await connectMongo();
   startMqtt();
-
-  if (isWebhookEnabled()) {
-    console.log(`[WEBHOOK] Twilio Function configurado: ${process.env.TWILIO_FUNCTION_URL}`);
-  } else {
-    console.warn("[WEBHOOK] Twilio Function no configurado. No se enviarán alertas por WhatsApp.");
-  }
 
   const port = process.env.PORT || 10000;
   app.listen(port, "0.0.0.0", () => {
