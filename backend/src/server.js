@@ -58,6 +58,177 @@ const DEVICE_CATALOG = {
 const DEVICE_IDS = Object.keys(DEVICE_CATALOG);
 
 /* =========================
+   ESTADO DEL GATEWAY TTN
+========================= */
+
+const gatewayStatusCache = {
+  gatewayId: process.env.TTN_GATEWAY_ID || null,
+  connected: null,
+  status: "unknown",
+  protocol: null,
+  connectedAt: null,
+  disconnectedAt: null,
+  lastStatusReceivedAt: null,
+  lastUplinkReceivedAt: null,
+  uplinkCount: 0,
+  downlinkCount: 0,
+  txAcknowledgmentCount: 0,
+  roundTripTimes: null,
+  lastCheckedAt: null,
+  source: "ttn-gs-api",
+  error: null
+};
+
+let gatewayPollingInProgress = false;
+
+function getTtnApiBaseUrl() {
+  const fromEnv = (process.env.TTN_API_BASE_URL || "").trim();
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+  return `https://${process.env.TTN_MQTT_HOST}`.replace(/\/+$/, "");
+}
+
+function getGatewayStatusIntervalMs() {
+  const value = Number(process.env.TTN_GATEWAY_STATUS_INTERVAL_MS || "15000");
+  return Number.isFinite(value) && value >= 5000 ? value : 15000;
+}
+
+function buildDisconnectedGatewayStatus() {
+  return {
+    gatewayId: process.env.TTN_GATEWAY_ID || null,
+    connected: false,
+    status: "disconnected",
+    protocol: null,
+    connectedAt: null,
+    disconnectedAt: null,
+    lastStatusReceivedAt: null,
+    lastUplinkReceivedAt: null,
+    uplinkCount: 0,
+    downlinkCount: 0,
+    txAcknowledgmentCount: 0,
+    roundTripTimes: null,
+    lastCheckedAt: new Date().toISOString(),
+    source: "ttn-gs-api",
+    error: null
+  };
+}
+
+function buildGatewayStatusFromStats(stats = {}) {
+  const connected = !stats.disconnected_at;
+
+  return {
+    gatewayId: process.env.TTN_GATEWAY_ID || null,
+    connected,
+    status: connected ? "connected" : "disconnected",
+    protocol: stats.protocol || null,
+    connectedAt: stats.connected_at || null,
+    disconnectedAt: stats.disconnected_at || null,
+    lastStatusReceivedAt: stats.last_status_received_at || null,
+    lastUplinkReceivedAt: stats.last_uplink_received_at || null,
+    uplinkCount: stats.uplink_count ?? 0,
+    downlinkCount: stats.downlink_count ?? 0,
+    txAcknowledgmentCount: stats.tx_acknowledgment_count ?? 0,
+    roundTripTimes: stats.round_trip_times || null,
+    lastCheckedAt: new Date().toISOString(),
+    source: "ttn-gs-api",
+    error: null
+  };
+}
+
+async function fetchGatewayConnectionStats() {
+  const gatewayId = process.env.TTN_GATEWAY_ID;
+  const apiKey = process.env.TTN_GATEWAY_API_KEY || process.env.TTN_API_KEY;
+
+  if (!gatewayId) {
+    throw new Error("Falta TTN_GATEWAY_ID");
+  }
+
+  if (!apiKey) {
+    throw new Error("Falta TTN_GATEWAY_API_KEY");
+  }
+
+  const url = `${getTtnApiBaseUrl()}/api/v3/gs/gateways/${encodeURIComponent(
+    gatewayId
+  )}/connection/stats`;
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: "application/json"
+    }
+  });
+
+  if (response.status === 404) {
+    return buildDisconnectedGatewayStatus();
+  }
+
+  const rawText = await response.text();
+  let data = {};
+
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    data = {};
+  }
+
+  if (!response.ok) {
+    const message =
+      data?.message ||
+      rawText ||
+      `TTN API respondió con estado ${response.status}`;
+
+    throw new Error(message);
+  }
+
+  return buildGatewayStatusFromStats(data);
+}
+
+async function refreshGatewayStatus() {
+  if (!process.env.TTN_GATEWAY_ID || gatewayPollingInProgress) {
+    return;
+  }
+
+  gatewayPollingInProgress = true;
+
+  try {
+    const previousStatus = gatewayStatusCache.status;
+    const nextStatus = await fetchGatewayConnectionStats();
+
+    Object.assign(gatewayStatusCache, nextStatus);
+
+    if (previousStatus !== "unknown" && previousStatus !== nextStatus.status) {
+      console.warn(
+        `[GATEWAY] ${nextStatus.gatewayId}: ${previousStatus} -> ${nextStatus.status}`
+      );
+    } else {
+      console.log(
+        `[GATEWAY] ${nextStatus.gatewayId}: ${nextStatus.status}`
+      );
+    }
+  } catch (error) {
+    gatewayStatusCache.lastCheckedAt = new Date().toISOString();
+    gatewayStatusCache.error = error?.message || String(error);
+
+    console.error(
+      "[GATEWAY] Error consultando estado:",
+      gatewayStatusCache.error
+    );
+  } finally {
+    gatewayPollingInProgress = false;
+  }
+}
+
+function startGatewayStatusPolling() {
+  if (!process.env.TTN_GATEWAY_ID) {
+    console.warn("[GATEWAY] TTN_GATEWAY_ID no configurado. Se omite monitoreo.");
+    return;
+  }
+
+  refreshGatewayStatus();
+  setInterval(refreshGatewayStatus, getGatewayStatusIntervalMs());
+}
+
+/* =========================
    REGLAS DE ALERTA
 ========================= */
 
@@ -731,6 +902,10 @@ function buildDeviceLatestResponse(deviceId, latest) {
    ENDPOINTS
 ========================= */
 
+app.get("/api/gateway/status", (req, res) => {
+  res.json(gatewayStatusCache);
+});
+
 app.get("/api/health", async (req, res) => {
   try {
     const total = await Measurement.countDocuments({
@@ -1133,6 +1308,7 @@ async function startServer() {
   console.log("Iniciando backend...");
   await connectMongo();
   startMqtt();
+  startGatewayStatusPolling();
 
   const port = process.env.PORT || 10000;
   app.listen(port, "0.0.0.0", () => {
