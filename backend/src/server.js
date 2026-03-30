@@ -191,19 +191,41 @@ async function refreshGatewayStatus() {
   gatewayPollingInProgress = true;
 
   try {
-    const previousStatus = gatewayStatusCache.status;
+    const previousStatus = gatewayAlertStateCache.get(process.env.TTN_GATEWAY_ID)
+      || gatewayStatusCache.status
+      || "unknown";
+
     const nextStatus = await fetchGatewayConnectionStats();
 
     Object.assign(gatewayStatusCache, nextStatus);
+    gatewayAlertStateCache.set(process.env.TTN_GATEWAY_ID, nextStatus.status);
 
     if (previousStatus !== "unknown" && previousStatus !== nextStatus.status) {
       console.warn(
         `[GATEWAY] ${nextStatus.gatewayId}: ${previousStatus} -> ${nextStatus.status}`
       );
+
+      if (nextStatus.status === "disconnected") {
+        await notifyGatewayStatusTransition({
+          gatewayId: nextStatus.gatewayId,
+          currentStatus: nextStatus.status,
+          previousStatus,
+          checkedAt: nextStatus.lastCheckedAt,
+          error: nextStatus.error,
+          isResolved: false
+        });
+      } else if (previousStatus === "disconnected" && nextStatus.status === "connected") {
+        await notifyGatewayStatusTransition({
+          gatewayId: nextStatus.gatewayId,
+          currentStatus: nextStatus.status,
+          previousStatus,
+          checkedAt: nextStatus.lastCheckedAt,
+          error: null,
+          isResolved: true
+        });
+      }
     } else {
-      console.log(
-        `[GATEWAY] ${nextStatus.gatewayId}: ${nextStatus.status}`
-      );
+      console.log(`[GATEWAY] ${nextStatus.gatewayId}: ${nextStatus.status}`);
     }
   } catch (error) {
     gatewayStatusCache.lastCheckedAt = new Date().toISOString();
@@ -255,6 +277,108 @@ const SEVERITY_RANK = {
 };
 
 const alertStateCache = new Map();
+
+const gatewayAlertStateCache = new Map();
+
+function getWhatsAppGatewayCooldownMs() {
+  const value = Number(
+    process.env.WHATSAPP_ALERT_COOLDOWN_MS ||
+    process.env.WHATSAPP_ALERT_COOLDOWN_MS ||
+    "900000"
+  );
+
+  return Number.isFinite(value) && value >= 0 ? value : 900000;
+}
+
+function buildGatewayWhatsAppAlertMessage({
+  gatewayId,
+  currentStatus,
+  previousStatus,
+  checkedAt,
+  error,
+  isResolved = false
+}) {
+  const when = formatWhatsAppDate(checkedAt || Date.now());
+
+  if (isResolved) {
+    return [
+      "✅ GATEWAY RECUPERADO",
+      `Gateway: ${gatewayId}`,
+      `Estado anterior: ${previousStatus}`,
+      `Estado actual: ${currentStatus}`,
+      `Fecha: ${when}`
+    ].join("\n");
+  }
+
+  return [
+    "🚨 ALERTA DE GATEWAY",
+    `Gateway: ${gatewayId}`,
+    `Estado anterior: ${previousStatus}`,
+    `Estado actual: ${currentStatus}`,
+    `Fecha: ${when}`,
+    error ? `Detalle: ${error}` : null
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function notifyGatewayStatusTransition({
+  gatewayId,
+  currentStatus,
+  previousStatus,
+  checkedAt,
+  error,
+  isResolved = false
+}) {
+  const recipients = getWhatsAppAlertRecipients();
+
+  if (!recipients.length) return;
+
+  if (!isWhatsAppEnabled()) {
+    console.warn("[WHATSAPP][GATEWAY] No configurado. Se omite el envío.");
+    return;
+  }
+
+  const cooldownKey = isResolved
+    ? `gateway:${gatewayId}:resolved`
+    : `gateway:${gatewayId}:${currentStatus}`;
+
+  if (isWhatsAppCooldownActive(cooldownKey)) {
+    console.log(`[WHATSAPP][GATEWAY] alerta omitida por cooldown: ${cooldownKey}`);
+    return;
+  }
+
+  const body = buildGatewayWhatsAppAlertMessage({
+    gatewayId,
+    currentStatus,
+    previousStatus,
+    checkedAt,
+    error,
+    isResolved
+  });
+
+  let sentOk = false;
+
+  for (const to of recipients) {
+    try {
+      const msg = await sendWhatsAppMessage({ to, body });
+      sentOk = true;
+
+      console.log(
+        `[WHATSAPP][GATEWAY] enviado sid=${msg.sid} to=${msg.to} status=${msg.status}`
+      );
+    } catch (sendError) {
+      console.error(
+        `[WHATSAPP][GATEWAY] error enviando a ${to}:`,
+        sendError?.message || sendError
+      );
+    }
+  }
+
+  if (sentOk) {
+    activateWhatsAppCooldown(cooldownKey, getWhatsAppGatewayCooldownMs());
+  }
+}
 
 /* =========================
    WHATSAPP / TWILIO
