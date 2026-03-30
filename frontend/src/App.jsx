@@ -166,6 +166,42 @@ function getAlertButtonCloseClass(level) {
   return level === "critico" ? "btn-close btn-close-white" : "btn-close";
 }
 
+function getGatewayUiStatus(gateway) {
+  const status = gateway?.status || "unknown";
+
+  if (status === "connected") {
+    return { text: "Conectado", tone: "online" };
+  }
+
+  if (status === "disconnected") {
+    return { text: "Desconectado", tone: "offline" };
+  }
+
+  if (gateway?.error) {
+    return { text: "Error", tone: "offline" };
+  }
+
+  return { text: "Verificando", tone: "warning" };
+}
+
+function formatAlertDisplayValue(value, unit = "") {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (value === null || value === undefined || value === "") {
+    return "--";
+  }
+
+  const n = Number(value);
+
+  if (Number.isNaN(n)) {
+    return String(value);
+  }
+
+  return `${n.toFixed(1)} ${unit}`.trim();
+}
+
 function evaluateTemperature(value, deviceId) {
   const n = toNumber(value);
   const deviceLabel = getDeviceLabel(deviceId);
@@ -439,6 +475,7 @@ export default function App() {
   const [devices, setDevices] = useState([]);
   const [latestDevices, setLatestDevices] = useState([]);
   const [items, setItems] = useState([]);
+  const [gatewayStatus, setGatewayStatus] = useState(null);
   const [selectedDevices, setSelectedDevices] = useState({});
   const [customRange, setCustomRange] = useState({ from: "", to: "" });
   const [error, setError] = useState("");
@@ -448,6 +485,7 @@ export default function App() {
 
   const previousLevelsRef = useRef({});
   const queuedKeysRef = useRef(new Set());
+  const gatewayPreviousStatusRef = useRef("unknown");
 
   useEffect(() => {
     document.documentElement.lang = "es";
@@ -470,6 +508,34 @@ export default function App() {
       },
     ]);
   }, []);
+
+  const processGatewayAlert = useCallback(
+    (gateway) => {
+      if (!gateway) return;
+
+      const gatewayId = gateway?.gatewayId || "gateway-lorawan";
+      const currentStatus = gateway?.status || "unknown";
+      const previousStatus = gatewayPreviousStatusRef.current || "unknown";
+
+      if (currentStatus === "disconnected" && previousStatus !== "disconnected") {
+        enqueueAlert({
+          deviceId: gatewayId,
+          deviceLabel: gatewayId,
+          metric: "gateway",
+          metricLabel: "Estado del gateway",
+          value: "Desconectado",
+          unit: "",
+          level: "critico",
+          label: "Crítico",
+          message: `Gateway ${gatewayId} desconectado.`,
+          receivedAt: gateway?.lastCheckedAt || new Date().toISOString(),
+        });
+      }
+
+      gatewayPreviousStatusRef.current = currentStatus;
+    },
+    [enqueueAlert]
+  );
 
   const processAlertsFromLatest = useCallback(
     (latestArray) => {
@@ -524,10 +590,11 @@ export default function App() {
     try {
       setError("");
 
-      const [configRes, latestRes, listRes] = await Promise.all([
+      const [configRes, latestRes, listRes, gatewayRes] = await Promise.all([
         fetch(`${API_URL}/api/devices/config`),
         fetch(`${API_URL}/api/devices/latest`),
         fetch(`${API_URL}/api/measurements?limit=5000&sort=asc`),
+        fetch(`${API_URL}/api/gateway/status`),
       ]);
 
       if (!configRes.ok || !latestRes.ok || !listRes.ok) {
@@ -538,6 +605,12 @@ export default function App() {
       const latestData = await latestRes.json();
       const listData = await listRes.json();
 
+      let gatewayData = null;
+
+      if (gatewayRes.ok) {
+        gatewayData = await gatewayRes.json();
+      }
+
       const safeDevices = Array.isArray(configData) ? configData : [];
       const safeLatest = Array.isArray(latestData) ? latestData : [];
       const safeItems = Array.isArray(listData) ? listData : [];
@@ -545,9 +618,11 @@ export default function App() {
       setDevices(safeDevices);
       setLatestDevices(safeLatest);
       setItems(safeItems);
+      setGatewayStatus(gatewayData);
       setLastUpdated(new Date());
 
       processAlertsFromLatest(safeLatest);
+      processGatewayAlert(gatewayData);
 
       setSelectedDevices((prev) => {
         const next = { ...prev };
@@ -569,7 +644,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [processAlertsFromLatest]);
+  }, [processAlertsFromLatest, processGatewayAlert]);
 
   useEffect(() => {
     loadData();
@@ -742,6 +817,10 @@ export default function App() {
     return result;
   }, [devices, selectedDevices, deviceMetricsMap, deviceColorMap]);
 
+  const gatewayUi = useMemo(() => {
+    return getGatewayUiStatus(gatewayStatus);
+  }, [gatewayStatus]);
+
   const handleRangeChange = (field, value) => {
     setCustomRange((prev) => ({
       ...prev,
@@ -796,14 +875,72 @@ export default function App() {
         </div>
 
         <div className="header-status">
-          <span className="status-bullet online-bullet" />
-          <span>Sistema en línea</span>
+          <span className={`status-pill ${gatewayUi.tone}`}>
+            Gateway: {gatewayUi.text}
+          </span>
         </div>
       </header>
 
       {(error || customRangeError) && (
         <div className="alert-box">Error: {customRangeError || error}</div>
       )}
+
+      <section className="section-card">
+        <div className="d-flex justify-content-between align-items-center flex-wrap gap-3">
+          <div>
+            <h3 className="mb-1">Estado del gateway</h3>
+            <p className="mb-0 text-muted" translate="no">
+              {gatewayStatus?.gatewayId || "--"}
+            </p>
+          </div>
+
+          <div className="d-flex align-items-center gap-2 flex-wrap">
+            <span className={`status-pill ${gatewayUi.tone}`}>
+              {gatewayUi.text}
+            </span>
+            <span className="text-muted small">
+              Última revisión: {formatDate(gatewayStatus?.lastCheckedAt)}
+            </span>
+          </div>
+        </div>
+
+        <div className="row g-3 mt-1">
+          <div className="col-12 col-md-4">
+            <div className="border rounded p-3 h-100">
+              <div className="text-muted small fw-bold">Gateway ID</div>
+              <div className="fw-bold" translate="no">
+                {gatewayStatus?.gatewayId || "--"}
+              </div>
+            </div>
+          </div>
+
+          <div className="col-12 col-md-4">
+            <div className="border rounded p-3 h-100">
+              <div className="text-muted small fw-bold">Protocolo</div>
+              <div className="fw-bold text-uppercase">
+                {gatewayStatus?.protocol || "--"}
+              </div>
+            </div>
+          </div>
+
+          <div className="col-12 col-md-4">
+            <div className="border rounded p-3 h-100">
+              <div className="text-muted small fw-bold">Último uplink</div>
+              <div className="fw-bold">
+                {formatDate(gatewayStatus?.lastUplinkReceivedAt)}
+              </div>
+            </div>
+          </div>
+
+          {gatewayStatus?.error && (
+            <div className="col-12">
+              <div className="alert alert-warning mb-0">
+                Error gateway: {gatewayStatus.error}
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
 
       {activeAlertsNow.length > 0 && (
         <div className="mb-3 d-flex flex-wrap gap-2">
@@ -968,6 +1105,10 @@ export default function App() {
             <strong>{activeAlertsNow.length}</strong>
             <span>Alertas activas</span>
           </div>
+          <div className="footer-chip">
+            <strong>{gatewayUi.text}</strong>
+            <span>Gateway</span>
+          </div>
         </div>
 
         <div className="footer-update">
@@ -1035,7 +1176,7 @@ export default function App() {
                       <div className="border rounded p-3 h-100">
                         <div className="text-muted small fw-bold">Valor</div>
                         <div className="fw-bold">
-                          {formatValue(activeAlert.value, 1)} {activeAlert.unit || ""}
+                          {formatAlertDisplayValue(activeAlert.value, activeAlert.unit)}
                         </div>
                       </div>
                     </div>
@@ -1075,4 +1216,4 @@ export default function App() {
       )}
     </div>
   );
-}  
+}
