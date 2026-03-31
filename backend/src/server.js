@@ -4,7 +4,6 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const mqtt = require("mqtt");
-const twilio = require("twilio");
 const Measurement = require("./models/Measurement");
 
 const requiredEnv = [
@@ -191,9 +190,10 @@ async function refreshGatewayStatus() {
   gatewayPollingInProgress = true;
 
   try {
-    const previousStatus = gatewayAlertStateCache.get(process.env.TTN_GATEWAY_ID)
-      || gatewayStatusCache.status
-      || "unknown";
+    const previousStatus =
+      gatewayAlertStateCache.get(process.env.TTN_GATEWAY_ID) ||
+      gatewayStatusCache.status ||
+      "unknown";
 
     const nextStatus = await fetchGatewayConnectionStats();
 
@@ -214,7 +214,10 @@ async function refreshGatewayStatus() {
           error: nextStatus.error,
           isResolved: false
         });
-      } else if (previousStatus === "disconnected" && nextStatus.status === "connected") {
+      } else if (
+        previousStatus === "disconnected" &&
+        nextStatus.status === "connected"
+      ) {
         await notifyGatewayStatusTransition({
           gatewayId: nextStatus.gatewayId,
           currentStatus: nextStatus.status,
@@ -277,145 +280,12 @@ const SEVERITY_RANK = {
 };
 
 const alertStateCache = new Map();
-
 const gatewayAlertStateCache = new Map();
-
-function getWhatsAppGatewayCooldownMs() {
-  const value = Number(
-    process.env.WHATSAPP_ALERT_COOLDOWN_MS ||
-    process.env.WHATSAPP_ALERT_COOLDOWN_MS ||
-    "900000"
-  );
-
-  return Number.isFinite(value) && value >= 0 ? value : 900000;
-}
-
-function buildGatewayWhatsAppAlertMessage({
-  gatewayId,
-  currentStatus,
-  previousStatus,
-  checkedAt,
-  error,
-  isResolved = false
-}) {
-  const when = formatWhatsAppDate(checkedAt || Date.now());
-
-  if (isResolved) {
-    return [
-      "✅ GATEWAY RECUPERADO",
-      `Gateway: ${gatewayId}`,
-      `Estado anterior: ${previousStatus}`,
-      `Estado actual: ${currentStatus}`,
-      `Fecha: ${when}`
-    ].join("\n");
-  }
-
-  return [
-    "🚨 ALERTA DE GATEWAY",
-    `Gateway: ${gatewayId}`,
-    `Estado anterior: ${previousStatus}`,
-    `Estado actual: ${currentStatus}`,
-    `Fecha: ${when}`,
-    error ? `Detalle: ${error}` : null
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-async function notifyGatewayStatusTransition({
-  gatewayId,
-  currentStatus,
-  previousStatus,
-  checkedAt,
-  error,
-  isResolved = false
-}) {
-  const recipients = getWhatsAppAlertRecipients();
-
-  if (!recipients.length) return;
-
-  if (!isWhatsAppEnabled()) {
-    console.warn("[WHATSAPP][GATEWAY] No configurado. Se omite el envío.");
-    return;
-  }
-
-  const cooldownKey = isResolved
-    ? `gateway:${gatewayId}:resolved`
-    : `gateway:${gatewayId}:${currentStatus}`;
-
-  if (isWhatsAppCooldownActive(cooldownKey)) {
-    console.log(`[WHATSAPP][GATEWAY] alerta omitida por cooldown: ${cooldownKey}`);
-    return;
-  }
-
-  const body = buildGatewayWhatsAppAlertMessage({
-    gatewayId,
-    currentStatus,
-    previousStatus,
-    checkedAt,
-    error,
-    isResolved
-  });
-
-  let sentOk = false;
-
-  for (const to of recipients) {
-    try {
-      const msg = await sendWhatsAppMessage({ to, body });
-      sentOk = true;
-
-      console.log(
-        `[WHATSAPP][GATEWAY] enviado sid=${msg.sid} to=${msg.to} status=${msg.status}`
-      );
-    } catch (sendError) {
-      console.error(
-        `[WHATSAPP][GATEWAY] error enviando a ${to}:`,
-        sendError?.message || sendError
-      );
-    }
-  }
-
-  if (sentOk) {
-    activateWhatsAppCooldown(cooldownKey, getWhatsAppGatewayCooldownMs());
-  }
-}
-
-/* =========================
-   WHATSAPP / TWILIO
-========================= */
-
-const whatsappClient =
-  process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
-    ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
-    : null;
-
 const whatsappCooldownCache = new Map();
 
-function isWhatsAppEnabled() {
-  return Boolean(
-    whatsappClient &&
-    process.env.TWILIO_ACCOUNT_SID &&
-    process.env.TWILIO_AUTH_TOKEN &&
-    process.env.TWILIO_WHATSAPP_FROM
-  );
-}
-
-function normalizeWhatsAppNumber(value) {
-  if (!value || typeof value !== "string") return "";
-  const clean = value.trim();
-  if (!clean) return "";
-  return clean.startsWith("whatsapp:") ? clean : `whatsapp:${clean}`;
-}
-
-function getWhatsAppFrom() {
-  return normalizeWhatsAppNumber(process.env.TWILIO_WHATSAPP_FROM);
-}
-
-function getWhatsAppAlertRecipients() {
-  return (process.env.WHATSAPP_ALERT_TO || "")
-    .split(",")
-    .map((v) => normalizeWhatsAppNumber(v))
-    .filter(Boolean);
+function getWhatsAppGatewayCooldownMs() {
+  const value = Number(process.env.WHATSAPP_ALERT_COOLDOWN_MS || "900000");
+  return Number.isFinite(value) && value >= 0 ? value : 900000;
 }
 
 function getWhatsAppCooldownMs() {
@@ -456,7 +326,113 @@ function formatWhatsAppDate(value) {
   });
 }
 
-function buildWhatsAppAlertMessage({ doc, status, previousLevel, isResolved = false }) {
+function buildGatewayWhatsAppAlertMessage({
+  gatewayId,
+  currentStatus,
+  previousStatus,
+  checkedAt,
+  error,
+  isResolved = false
+}) {
+  const when = formatWhatsAppDate(checkedAt || Date.now());
+
+  if (isResolved) {
+    return [
+      "✅ GATEWAY RECUPERADO",
+      `Gateway: ${gatewayId}`,
+      `Estado anterior: ${previousStatus}`,
+      `Estado actual: ${currentStatus}`,
+      `Fecha: ${when}`
+    ].join("\n");
+  }
+
+  return [
+    "🚨 ALERTA DE GATEWAY",
+    `Gateway: ${gatewayId}`,
+    `Estado anterior: ${previousStatus}`,
+    `Estado actual: ${currentStatus}`,
+    `Fecha: ${when}`,
+    error ? `Detalle: ${error}` : null
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/* =========================
+   WHATSAPP / TWILIO WEBHOOK
+========================= */
+
+function isTwilioWebhookEnabled() {
+  return Boolean(
+    process.env.TWILIO_FUNCTION_URL &&
+    process.env.TWILIO_FUNCTION_TOKEN
+  );
+}
+
+async function sendWhatsAppByWebhook({ body, extra = {} }) {
+  if (!isTwilioWebhookEnabled()) {
+    throw new Error(
+      "Webhook de Twilio no configurado. Revisa TWILIO_FUNCTION_URL y TWILIO_FUNCTION_TOKEN."
+    );
+  }
+
+  if (!body || !String(body).trim()) {
+    throw new Error("El mensaje a enviar está vacío.");
+  }
+
+  const params = new URLSearchParams();
+  params.set("token", process.env.TWILIO_FUNCTION_TOKEN);
+  params.set("mensaje", String(body).trim());
+
+  for (const [key, value] of Object.entries(extra)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+
+  const controller = new AbortController();
+  const timeoutMs = Number(process.env.TWILIO_FUNCTION_TIMEOUT_MS || "15000");
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(process.env.TWILIO_FUNCTION_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: params.toString(),
+      signal: controller.signal
+    });
+
+    const rawText = await response.text();
+
+    let data = {};
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      data = { raw: rawText };
+    }
+
+    if (!response.ok || data?.ok === false) {
+      throw new Error(
+        data?.error ||
+          data?.message ||
+          `Twilio Function respondió con estado ${response.status}`
+      );
+    }
+
+    return data;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildWhatsAppAlertMessage({
+  doc,
+  status,
+  previousLevel,
+  isResolved = false
+}) {
   const deviceLabel = DEVICE_CATALOG[doc.deviceId]?.label || doc.deviceId;
   const value = status.value ?? "N/D";
   const unit = status.unit || "";
@@ -485,52 +461,66 @@ function buildWhatsAppAlertMessage({ doc, status, previousLevel, isResolved = fa
   ].join("\n");
 }
 
-async function sendWhatsAppMessage({ to, body, contentSid, contentVariables }) {
-  if (!isWhatsAppEnabled()) {
-    throw new Error(
-      "Twilio WhatsApp no está configurado. Revisa TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN y TWILIO_WHATSAPP_FROM."
-    );
-  }
-
-  const payload = {
-    from: getWhatsAppFrom(),
-    to: normalizeWhatsAppNumber(to)
-  };
-
-  if (!payload.to) {
-    throw new Error("Número destino inválido para WhatsApp.");
-  }
-
-  if (process.env.TWILIO_WHATSAPP_STATUS_CALLBACK_URL) {
-    payload.statusCallback = process.env.TWILIO_WHATSAPP_STATUS_CALLBACK_URL;
-  }
-
-  if (contentSid) {
-    payload.contentSid = contentSid;
-    if (contentVariables) {
-      payload.contentVariables =
-        typeof contentVariables === "string"
-          ? contentVariables
-          : JSON.stringify(contentVariables);
-    }
-  } else if (body) {
-    payload.body = body;
-  } else {
-    throw new Error("Debes enviar 'body' o 'contentSid'.");
-  }
-
-  return whatsappClient.messages.create(payload);
-}
-
-async function notifyWhatsAppAlertTransition({ doc, status, previousLevel, isResolved = false }) {
-  const recipients = getWhatsAppAlertRecipients();
-
-  if (!recipients.length) {
+async function notifyGatewayStatusTransition({
+  gatewayId,
+  currentStatus,
+  previousStatus,
+  checkedAt,
+  error,
+  isResolved = false
+}) {
+  if (!isTwilioWebhookEnabled()) {
+    console.warn("[WEBHOOK][GATEWAY] No configurado. Se omite el envío.");
     return;
   }
 
-  if (!isWhatsAppEnabled()) {
-    console.warn("[WHATSAPP] No configurado. Se omite el envío.");
+  const cooldownKey = isResolved
+    ? `gateway:${gatewayId}:resolved`
+    : `gateway:${gatewayId}:${currentStatus}`;
+
+  if (isWhatsAppCooldownActive(cooldownKey)) {
+    console.log(`[WEBHOOK][GATEWAY] alerta omitida por cooldown: ${cooldownKey}`);
+    return;
+  }
+
+  const body = buildGatewayWhatsAppAlertMessage({
+    gatewayId,
+    currentStatus,
+    previousStatus,
+    checkedAt,
+    error,
+    isResolved
+  });
+
+  try {
+    const result = await sendWhatsAppByWebhook({
+      body,
+      extra: {
+        tipo: isResolved ? "gateway_resuelto" : "gateway_alerta",
+        gateway_id: gatewayId,
+        estado_actual: currentStatus,
+        estado_anterior: previousStatus
+      }
+    });
+
+    console.log("[WEBHOOK][GATEWAY] enviado:", JSON.stringify(result));
+    activateWhatsAppCooldown(cooldownKey, getWhatsAppGatewayCooldownMs());
+  } catch (sendError) {
+    console.error(
+      "[WEBHOOK][GATEWAY] error enviando alerta:",
+      sendError?.message || sendError
+    );
+  }
+}
+
+async function notifyWhatsAppAlertTransition({
+  doc,
+  status,
+  previousLevel,
+  isResolved = false
+}) {
+  if (!isTwilioWebhookEnabled()) {
+    console.warn("[WEBHOOK] No configurado. Se omite el envío.");
     return;
   }
 
@@ -539,7 +529,7 @@ async function notifyWhatsAppAlertTransition({ doc, status, previousLevel, isRes
     : `${doc.deviceId}:${status.metric}:${status.level}`;
 
   if (isWhatsAppCooldownActive(cooldownKey)) {
-    console.log(`[WHATSAPP] alerta omitida por cooldown: ${cooldownKey}`);
+    console.log(`[WEBHOOK] alerta omitida por cooldown: ${cooldownKey}`);
     return;
   }
 
@@ -550,29 +540,27 @@ async function notifyWhatsAppAlertTransition({ doc, status, previousLevel, isRes
     isResolved
   });
 
-  let sentOk = false;
+  try {
+    const result = await sendWhatsAppByWebhook({
+      body,
+      extra: {
+        tipo: isResolved ? "alerta_resuelta" : "alerta",
+        device_id: doc.deviceId,
+        variable: status.metric,
+        nivel: status.level,
+        valor: status.value ?? ""
+      }
+    });
 
-  for (const to of recipients) {
-    try {
-      const msg = await sendWhatsAppMessage({ to, body });
-      sentOk = true;
-
-      console.log(
-        `[WHATSAPP] enviado sid=${msg.sid} to=${msg.to} status=${msg.status}`
-      );
-    } catch (error) {
-      console.error(
-        `[WHATSAPP] error enviando a ${to}:`,
-        error?.message || error
-      );
-    }
-  }
-
-  if (sentOk) {
+    console.log("[WEBHOOK] enviado:", JSON.stringify(result));
     activateWhatsAppCooldown(cooldownKey);
+  } catch (error) {
+    console.error(
+      "[WEBHOOK] error enviando alerta:",
+      error?.message || error
+    );
   }
 }
-
 
 /* =========================
    APP
@@ -1110,48 +1098,31 @@ app.get("/api/alerts/active", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-////////////////////////////////////////////////////
+
 app.post("/api/whatsapp/send", async (req, res) => {
   try {
-    const { to, body, contentSid, contentVariables } = req.body || {};
+    const { body, mensaje } = req.body || {};
+    const finalMessage = (body || mensaje || "").trim();
 
-    if (!to) {
+    if (!finalMessage) {
       return res.status(400).json({
         ok: false,
-        error: "El campo 'to' es obligatorio."
+        error: "El campo 'body' o 'mensaje' es obligatorio."
       });
     }
 
-    if (!body && !contentSid) {
-      return res.status(400).json({
-        ok: false,
-        error: "Debes enviar 'body' para texto libre o 'contentSid' para plantilla."
-      });
-    }
-
-    const msg = await sendWhatsAppMessage({
-      to,
-      body,
-      contentSid,
-      contentVariables
+    const result = await sendWhatsAppByWebhook({
+      body: finalMessage
     });
 
     res.status(201).json({
       ok: true,
-      sid: msg.sid,
-      status: msg.status,
-      from: msg.from,
-      to: msg.to,
-      body: msg.body ?? null
+      result
     });
   } catch (error) {
-    const status = Number(error?.status || error?.statusCode || 500);
-
-    res.status(status >= 400 ? status : 500).json({
+    res.status(500).json({
       ok: false,
-      error: error?.message || "Error enviando WhatsApp",
-      code: error?.code || null,
-      moreInfo: error?.moreInfo || null
+      error: error?.message || "Error enviando alerta al webhook de Twilio"
     });
   }
 });
@@ -1175,8 +1146,6 @@ app.post("/api/whatsapp/inbound", (req, res) => {
 
   res.sendStatus(200);
 });
-
-////////////////////////////////////////////////////////////7
 
 app.get("/api/measurements/latest", async (req, res) => {
   try {
@@ -1430,6 +1399,15 @@ function startMqtt() {
 
 async function startServer() {
   console.log("Iniciando backend...");
+
+  if (isTwilioWebhookEnabled()) {
+    console.log("[WEBHOOK] Twilio Function configurado correctamente");
+  } else {
+    console.warn(
+      "[WEBHOOK] TWILIO_FUNCTION_URL o TWILIO_FUNCTION_TOKEN no configurados. Las alertas por WhatsApp no se enviarán."
+    );
+  }
+
   await connectMongo();
   startMqtt();
   startGatewayStatusPolling();
